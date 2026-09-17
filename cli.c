@@ -8,6 +8,8 @@ static u32 mnu_prompt; /* 0=mycelius>, 1=> */
 static int mnu_unsaved; /* 1 if MNU has unsaved changes */
 static u32 mnu_filename; /* filename length, or 0 */
 static char mnu_save_name[32]; /* persisted filename for save message */
+static char mnu_buf[1024]; /* MNU editor buffer */
+static u32 mnu_len; /* bytes in MNU editor buffer */
 
 /* Utility functions */
 static void put_u32(u32 n) {
@@ -24,11 +26,21 @@ static void prompt(void); /* forward declaration */
 /* Save current MNU file and mark as saved */
 static void mnu_save(void) {
     if (mnu_filename) {
-        uart_puts("[");
-        uart_puts(mnu_save_name);
-        uart_puts("] saved\r\n");
+        if (vfs_write_file(mnu_save_name, mnu_buf, mnu_len)) {
+            uart_puts("[");
+            uart_puts(mnu_save_name);
+            uart_puts("] save failed\r\n");
+        } else {
+            uart_puts("[");
+            uart_puts(mnu_save_name);
+            uart_puts("] saved\r\n");
+        }
     } else {
-        uart_puts("[New File] saved\r\n");
+        if (vfs_write_file("newfile.txt", mnu_buf, mnu_len)) {
+            uart_puts("[New File] save failed\r\n");
+        } else {
+            uart_puts("[New File] saved\r\n");
+        }
     }
     mnu_unsaved = 0;
 }
@@ -144,6 +156,7 @@ static void execute(void) {
         mnu_unsaved = 1;
         mnu_filename = 0;
         mnu_save_name[0] = 0;
+        mnu_len = 0;
         /* Check if a filename was provided */
         const char *a = arg(line, 3);
         if (a && *a) {
@@ -171,9 +184,8 @@ static void execute(void) {
 /* Console poll */
 void cli_poll(void) {
     int c = uart_getc_nonblock(); if (c < 0) return;
-    if (c == '\r' || c == '\n') { uart_puts("\r\n"); line[used] = 0; execute(); used = 0; prompt(); return; }
-    if ((c == 8 || c == 127) && used) { --used; uart_puts("\b \b"); return; }
-    /* Handle Ctrl+S (19) and Ctrl+X (24) in MNU mode */
+
+    /* MNU editor mode: capture text into the editor buffer */
     if (mnu_prompt) {
         if (c == 19) { /* Ctrl+S */ 
             mnu_save();
@@ -183,7 +195,26 @@ void cli_poll(void) {
             mnu_exit();
             return;
         }
+        if (c == '\r' || c == '\n') {
+            uart_puts("\r\n");
+            if (mnu_len + 1 < sizeof mnu_buf) mnu_buf[mnu_len++] = '\n';
+            prompt();
+            return;
+        }
+        if ((c == 8 || c == 127)) {
+            if (mnu_len) { --mnu_len; uart_puts("\b \b"); }
+            return;
+        }
+        if (c >= 32 && c <= 126 && mnu_len + 1 < sizeof mnu_buf) {
+            mnu_buf[mnu_len++] = (char)c;
+            char out[2] = { (char)c, 0 };
+            uart_puts(out);
+        }
+        return;
     }
+
+    if (c == '\r' || c == '\n') { uart_puts("\r\n"); line[used] = 0; execute(); used = 0; prompt(); return; }
+    if ((c == 8 || c == 127) && used) { --used; uart_puts("\b \b"); return; }
     if (c >= 32 && c <= 126 && used + 1 < sizeof line) { line[used++] = (char)c; char out[2] = { (char)c, 0 }; uart_puts(out); }
 }
 

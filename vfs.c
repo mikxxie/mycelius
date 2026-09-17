@@ -97,3 +97,8 @@ int vfs_rm(const char *path, int recursive) {
     return 0;
 }
 
+int vfs_write_file(const char *path, const void *data, u32 len) {
+    if (disk && ext4_mounted()) return ext4_write_file(path, (const u8 *)data, len);
+    return -1;
+}
+

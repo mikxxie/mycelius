@@ -25,6 +25,7 @@ static u32 crc32c(const void *data, u32 len, u32 crc) {
 
 #define EXT4_MAGIC 0xef53
 #define EXT4_EXTENTS_FL 0x80000
+#define EXT4_FT_REG_FILE 1
 #define EXT4_FT_DIR 2
 #define EXT4_FT_DIR_CSUM 0xDE
 
@@ -487,6 +488,209 @@ int ext4_mkdir(const char *path) {
         }
     }
     return made_any ? 0 : -1;
+}
+
+/* Create a new regular file and write its data (single 1024-byte block) */
+static int ext4_write_create(u32 parent_ino, const char *name, const u8 *data, u32 len) {
+    if (len > 1024) return -1;
+
+    /* 1. Allocate free inode from inode bitmap (block 82) */
+    if (read_1k(s_inode_bitmap_blk, blk_buf1)) return -1;
+    u32 new_ino = 0;
+    for (u32 i = 11; i < s_inodes_count; ++i) {
+        if (!(blk_buf1[i / 8] & (1u << (i % 8)))) {
+            blk_buf1[i / 8] |= (1u << (i % 8));
+            new_ino = i + 1;
+            break;
+        }
+    }
+    if (!new_ino) return -1;
+    if (write_1k(s_inode_bitmap_blk, blk_buf1)) return -1;
+
+    /* 2. Allocate free data block from block bitmap (block 66) */
+    if (read_1k(s_block_bitmap_blk, blk_buf2)) return -1;
+    u32 new_blk = 0;
+    for (u32 i = 0; i < s_blocks_count; ++i) {
+        if (!(blk_buf2[i / 8] & (1u << (i % 8)))) {
+            blk_buf2[i / 8] |= (1u << (i % 8));
+            new_blk = i + s_first_data_block;
+            break;
+        }
+    }
+    if (!new_blk) return -1;
+    if (write_1k(s_block_bitmap_blk, blk_buf2)) return -1;
+
+    /* 3. Write file data into the new block */
+    mem_set(blk_buf3, 0, 1024);
+    mem_cpy(blk_buf3, data, len);
+    if (write_1k(new_blk, blk_buf3)) return -1;
+
+    /* 4. Initialize new inode (regular file 0644) */
+    mem_set(inode_buf, 0, 256);
+    put_le16(inode_buf, 0x81a4); /* mode: regular 0644 */
+    put_le32(inode_buf + 4, len); /* size_lo */
+    put_le32(inode_buf + 8, 0x6aa99c1e); /* atime */
+    put_le32(inode_buf + 12, 0x6aa99c1e); /* ctime */
+    put_le32(inode_buf + 16, 0x6aa99c1e); /* mtime */
+    put_le16(inode_buf + 26, 1); /* links_count */
+    put_le32(inode_buf + 28, 2); /* blocks_lo: 2 sectors */
+    put_le32(inode_buf + 32, EXT4_EXTENTS_FL);
+    /* Extent header at 40 */
+    put_le16(inode_buf + 40, 0xf30a);
+    put_le16(inode_buf + 42, 1);
+    put_le16(inode_buf + 44, 4);
+    put_le16(inode_buf + 46, 0);
+    put_le32(inode_buf + 48, 0);
+    /* Leaf extent at 52 */
+    put_le32(inode_buf + 52, 0);
+    put_le16(inode_buf + 56, 1);
+    put_le16(inode_buf + 58, 0);
+    put_le32(inode_buf + 60, new_blk);
+    put_le16(inode_buf + 128, 32); /* extra isize */
+    if (ext4_write_inode(new_ino, inode_buf)) return -1;
+
+    /* 5. Insert directory entry into parent directory data block */
+    if (ext4_read_inode(parent_ino, parent_inobuf)) return -1;
+    u32 parent_pblk = ext4_extent_bmap(parent_inobuf, 0);
+    if (!parent_pblk) return -1;
+    if (read_1k(parent_pblk, blk_buf4)) return -1;
+
+    u32 nlen = str_len(name);
+    u16 needed = (8 + (u16)nlen + 3) & ~3;
+    int inserted = 0;
+    for (u32 pos = 0; pos + 8 <= 1012;) {
+        u16 e_rec = le16(blk_buf4 + pos + 4);
+        u8 e_name_len = blk_buf4[pos + 6];
+        u8 e_ft = blk_buf4[pos + 7];
+        if (e_rec < 8 || pos + e_rec > 1024) break;
+        if (e_ft == EXT4_FT_DIR_CSUM) break;
+        u16 actual = (8 + (u16)e_name_len + 3) & ~3;
+        if (e_rec >= actual + needed) {
+            u16 slack = e_rec - actual;
+            put_le16(blk_buf4 + pos + 4, actual);
+            u32 new_pos = pos + actual;
+            put_le32(blk_buf4 + new_pos, new_ino);
+            put_le16(blk_buf4 + new_pos + 4, slack);
+            blk_buf4[new_pos + 6] = (u8)nlen;
+            blk_buf4[new_pos + 7] = EXT4_FT_REG_FILE;
+            mem_cpy(blk_buf4 + new_pos + 8, name, nlen);
+            inserted = 1;
+            break;
+        }
+        pos += e_rec;
+    }
+    if (!inserted) return -1;
+
+    /* Update parent directory tail checksum */
+    u32 c = crc32c(&parent_ino, 4, s_csum_seed);
+    u32 gen = 0;
+    c = crc32c(&gen, 4, c);
+    c = crc32c(blk_buf4, 1012, c);
+    put_le32(blk_buf4 + 1020, c);
+    if (write_1k(parent_pblk, blk_buf4)) return -1;
+
+    /* 6. Update Group Descriptor (block 2) */
+    if (read_1k(2, blk_buf3)) return -1;
+    put_le16(blk_buf3 + 12, le16(blk_buf3 + 12) - 1);
+    put_le16(blk_buf3 + 14, le16(blk_buf3 + 14) - 1);
+    u32 bb_c = crc32c(blk_buf2, 1024, s_csum_seed);
+    put_le16(blk_buf3 + 0x18, (u16)(bb_c & 0xffff));
+    put_le16(blk_buf3 + 0x38, (u16)((bb_c >> 16) & 0xffff));
+    u32 ib_c = crc32c(blk_buf1, 256, s_csum_seed);
+    put_le16(blk_buf3 + 0x1a, (u16)(ib_c & 0xffff));
+    put_le16(blk_buf3 + 0x3a, (u16)((ib_c >> 16) & 0xffff));
+    blk_buf3[0x1e] = 0; blk_buf3[0x1f] = 0;
+    u32 zero_group = 0;
+    u32 gd_c = crc32c(&zero_group, 4, s_csum_seed);
+    u16 gd_csum = (u16)crc32c(blk_buf3, 64, gd_c);
+    put_le16(blk_buf3 + 0x1e, gd_csum);
+    if (write_1k(2, blk_buf3)) return -1;
+
+    /* 7. Update Superblock (block 1) */
+    if (read_1k(1, blk_buf3)) return -1;
+    put_le32(blk_buf3 + 12, le32(blk_buf3 + 12) - 1);
+    put_le32(blk_buf3 + 16, le32(blk_buf3 + 16) - 1);
+    put_le32(blk_buf3 + 0x3fc, 0);
+    u32 sb_c = crc32c(blk_buf3, 1020, 0xffffffff);
+    put_le32(blk_buf3 + 0x3fc, sb_c);
+    if (write_1k(1, blk_buf3)) return -1;
+
+    virtio_blk_flush();
+    return 0;
+}
+
+/* Overwrite an existing regular file in place */
+static int ext4_write_overwrite(u32 parent_ino, u32 target_ino, const u8 *data, u32 len) {
+    (void)parent_ino;
+    if (len > 1024) return -1;
+    u8 t_inobuf[256];
+    if (ext4_read_inode(target_ino, t_inobuf)) return -1;
+    if ((le16(t_inobuf) & 0xf000) != 0x8000) return -1; /* must be regular file */
+    u32 pblk = ext4_extent_bmap(t_inobuf, 0);
+    if (!pblk) return -1;
+
+    mem_set(blk_buf3, 0, 1024);
+    mem_cpy(blk_buf3, data, len);
+    if (write_1k(pblk, blk_buf3)) return -1;
+
+    put_le32(t_inobuf + 4, len); /* size_lo */
+    put_le32(t_inobuf + 16, 0x6aa99c1e); /* mtime */
+    put_le32(t_inobuf + 28, 2); /* blocks_lo: 2 sectors */
+    if (ext4_write_inode(target_ino, t_inobuf)) return -1;
+
+    virtio_blk_flush();
+    return 0;
+}
+
+int ext4_write_file(const char *path, const u8 *data, u32 len) {
+    if (!path || !path[0] || !data || len > 1024) return -1;
+    char pbuf[128];
+    u32 plen = 0;
+    while (path[plen] && plen < 127) { pbuf[plen] = path[plen]; plen++; }
+    while (plen > 1 && pbuf[plen - 1] == '/') --plen;
+    pbuf[plen] = 0;
+
+    if (str_eq(pbuf, "/") || str_eq(pbuf, ".") || str_eq(pbuf, "..")) return -1;
+
+    char parent_path[128];
+    char target_name[32];
+    int last_slash = -1;
+    for (int i = (int)plen - 1; i >= 0; --i) {
+        if (pbuf[i] == '/') { last_slash = i; break; }
+    }
+
+    if (last_slash < 0) {
+        parent_path[0] = 0;
+        u32 i = 0;
+        while (pbuf[i] && i < 31) { target_name[i] = pbuf[i]; ++i; }
+        target_name[i] = 0;
+    } else if (last_slash == 0) {
+        parent_path[0] = '/';
+        parent_path[1] = 0;
+        u32 i = 0;
+        while (pbuf[last_slash + 1 + i] && i < 31) { target_name[i] = pbuf[last_slash + 1 + i]; ++i; }
+        target_name[i] = 0;
+    } else {
+        for (int i = 0; i < last_slash; ++i) parent_path[i] = pbuf[i];
+        parent_path[last_slash] = 0;
+        u32 i = 0;
+        while (pbuf[last_slash + 1 + i] && i < 31) { target_name[i] = pbuf[last_slash + 1 + i]; ++i; }
+        target_name[i] = 0;
+    }
+
+    if (!target_name[0] || str_eq(target_name, ".") || str_eq(target_name, "..")) return -1;
+
+    u32 parent_ino = 0;
+    if (ext4_resolve_path(parent_path, &parent_ino)) return -1;
+
+    u32 target_ino = 0;
+    u8 target_type = 0;
+    if (ext4_lookup(parent_ino, target_name, &target_ino, &target_type) == 0) {
+        if (ext4_write_overwrite(parent_ino, target_ino, data, len)) return -1;
+    } else {
+        if (ext4_write_create(parent_ino, target_name, data, len)) return -1;
+    }
+    return 0;
 }
 
 static int ext4_rm_single(u32 parent_ino, const char *name, u32 target_ino, u8 target_type) {

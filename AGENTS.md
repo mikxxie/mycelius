@@ -20,6 +20,12 @@
     block bitmaps, inode bitmaps, group descriptors, and the superblock.
   - Single and recursive / path-based directory creation (`mkdir dir/home/hello/lol`).
   - Path navigation (`cd`, `pwd`, `ls`, `ls <path>`).
+  - Regular-file creation and data write (`ext4_write_file`) modeled on `mkdir`:
+    inode + one 1024-byte data block allocated from the bitmaps, extent-mapped inode
+    (mode 0644, `EXT4_EXTENTS_FL`), directory entry insertion, group descriptor and
+    superblock count/checksum updates, then `virtio_blk_flush`.
+  - In-place overwrite of existing regular files on re-save (size/mtime updated,
+    blockcount kept at 2 sectors as total disk usage).
   - Strict reboot persistence verified across QEMU restarts and confirmed 100% clean
     by host `e2fsck`.
 - Shell VFS routes to ext4 when mounted, and falls back to RAM VFS when running
@@ -32,17 +38,16 @@
   - `mnu` opens an editor prompt: welcome message, save/exit instructions,
     and a `>` prompt instead of `mycelius>`.
   - `mnu <name>` (e.g. `mnu file.txt`) echoes `File: file.txt` on entry.
-  - Ctrl+S (0x13) saves and prints `[<name>] saved`, or `[New File] saved`
-    when no name was given.
+  - Editor keys: printable chars and space append to a 1024-byte in-memory
+    buffer (`mnu_buf`), Enter inserts a newline, backspace erases.
+  - Ctrl+S (0x13) persists the buffer to ext4 via `vfs_write_file` and prints
+    `[<name>] saved`, or `[New File] saved` when no name was given (written to
+    `newfile.txt`). Save failure prints `<save failed>`.
   - Ctrl+X (0x24) exits; pressing it again confirms when changes are unsaved
     (shows `Save changes before exit? y/n`).
-  - Editor text is currently an in-memory buffer in `cli.c`; not yet
-    persisted to ext4.
 
 ## Next work, in required order
 
 1. Proceed with the virtio-net queue, Ethernet framing, ARP, IPv4 and ICMP.
 2. Build per-task EL0 translation tables and transition the drivers into isolated
    EL0 user processes.
-3. Verify MNU CLI displays correctly and ext4 ls/persistence works across reboots.
-4. Consider persisting MNU editor buffer to ext4 on Ctrl+S.
