@@ -26,6 +26,8 @@
     superblock count/checksum updates, then `virtio_blk_flush`.
   - In-place overwrite of existing regular files on re-save (size/mtime updated,
     blockcount kept at 2 sectors as total disk usage).
+  - File read-back (`ext4_cat`) — resolves regular files and prints contents,
+    rendering stored `\n` as `\r\n` for the serial console.
   - Strict reboot persistence verified across QEMU restarts and confirmed 100% clean
     by host `e2fsck`.
 - Shell VFS routes to ext4 when mounted, and falls back to RAM VFS when running
@@ -42,9 +44,14 @@
     buffer (`mnu_buf`), Enter inserts a newline, backspace erases.
   - Ctrl+S (0x13) persists the buffer to ext4 via `vfs_write_file` and prints
     `[<name>] saved`, or `[New File] saved` when no name was given (written to
-    `newfile.txt`). Save failure prints `<save failed>`.
-  - Ctrl+X (0x24) exits; pressing it again confirms when changes are unsaved
-    (shows `Save changes before exit? y/n`).
+    `newfile.txt`). Save failure prints `save failed`. Save/exit messages start
+    on a new line even when the buffer has no trailing newline; save keeps the
+    editor open (`>` prompt).
+  - Ctrl+X (0x24) exits. If there are unsaved changes it asks `Save changes
+    before exit? y/n` and waits: `y` saves then exits, `n` discards, and a
+    second Ctrl+X also confirms quit. Unsaved state is only tracked after the
+    buffer is actually edited (typing/Enter/backspace).
+  - `cat <file>` command prints a saved file's contents (`vfs_cat` → `ext4_cat`).
 
 ## Next work, in required order
 

@@ -6,6 +6,7 @@ static u32 used;
 static int same(const char *a, const char *b) { while (*a && *a == *b) { ++a; ++b; } return *a == *b; }
 static u32 mnu_prompt; /* 0=mycelius>, 1=> */
 static int mnu_unsaved; /* 1 if MNU has unsaved changes */
+static int mnu_confirm; /* 1 = waiting for y/n after unsaved exit request */
 static u32 mnu_filename; /* filename length, or 0 */
 static char mnu_save_name[32]; /* persisted filename for save message */
 static char mnu_buf[1024]; /* MNU editor buffer */
@@ -25,6 +26,7 @@ static void prompt(void); /* forward declaration */
 
 /* Save current MNU file and mark as saved */
 static void mnu_save(void) {
+    uart_puts("\r\n");
     if (mnu_filename) {
         if (vfs_write_file(mnu_save_name, mnu_buf, mnu_len)) {
             uart_puts("[");
@@ -45,12 +47,24 @@ static void mnu_save(void) {
     mnu_unsaved = 0;
 }
 
-/* Exit MNU, confirming discard if unsaved */
+/* Exit MNU; if unsaved, ask y/n and wait for the answer */
 static void mnu_exit(void) {
-    if (mnu_unsaved) {
-        uart_puts("Save changes before exit? y/n\r\n");
+    if (mnu_unsaved && !mnu_confirm) {
+        uart_puts("\r\nSave changes before exit? y/n\r\n");
+        mnu_confirm = 1;
+        prompt();
+        return;
     }
     mnu_prompt = 0;
+    mnu_confirm = 0;
+    mnu_unsaved = 0;
+    uart_puts("mycelius> ");
+}
+
+/* Complete an exit request answered with y (save) or n (discard) */
+static void mnu_finish_exit(void) {
+    mnu_prompt = 0;
+    mnu_confirm = 0;
     mnu_unsaved = 0;
     uart_puts("mycelius> ");
 }
@@ -71,6 +85,7 @@ static void help_disp(void) {
         "pwd            - Show current working directory\r\n"
         "ls             - List directory contents\r\n"
         "ls <path>      - List directory at path\r\n"
+        "cat <file>     - Print file contents\r\n"
         "cd <dir>       - Change directory\r\n"
         "mkdir <dir>    - Create directory\r\n"
         "rm [-r|--recursive] <path> - Remove file/directory\r\n"
@@ -139,6 +154,11 @@ static void execute(void) {
     else if (same(line, "pwd")) vfs_pwd();
     else if (same(line, "ls")) vfs_ls();
     else if (line[0] == 'l' && line[1] == 's' && line[2] == ' ') { if (vfs_ls_path(arg(line, 2))) uart_puts("ls: no such directory\r\n"); }
+    else if (line[0] == 'c' && line[1] == 'a' && line[2] == 't' && (line[3] == ' ' || line[3] == 0)) {
+        const char *p = arg(line, 3);
+        if (!p || !*p) uart_puts("cat: usage: cat <file>\r\n");
+        else if (vfs_cat(p)) uart_puts("cat: cannot read file\r\n");
+    }
     else if (line[0] == 'c' && line[1] == 'd' && line[2] == ' ') { if (vfs_cd(arg(line, 2))) uart_puts("cd: no such directory\r\n"); }
     else if (line[0] == 'm' && line[1] == 'k' && line[2] == 'd' && line[3] == 'i' && line[4] == 'r' && line[5] == ' ') { if (vfs_mkdir(arg(line, 5))) uart_puts("mkdir: cannot create directory\r\n"); }
     else if (line[0] == 'r' && line[1] == 'm' && (line[2] == ' ' || line[2] == 0)) do_rm(arg(line, 2));
@@ -153,7 +173,8 @@ static void execute(void) {
     else if (same(line, "restart blk")) task_restart(2);
     else if (line[0] == 'm' && line[1] == 'n' && line[2] == 'u' && (line[3] == 0 || line[3] == ' ')) {
         mnu_prompt = 1;
-        mnu_unsaved = 1;
+        mnu_unsaved = 0;
+        mnu_confirm = 0;
         mnu_filename = 0;
         mnu_save_name[0] = 0;
         mnu_len = 0;
@@ -185,10 +206,24 @@ static void execute(void) {
 void cli_poll(void) {
     int c = uart_getc_nonblock(); if (c < 0) return;
 
-    /* MNU editor mode: capture text into the editor buffer */
+    /* MNU editor mode */
     if (mnu_prompt) {
-        if (c == 19) { /* Ctrl+S */ 
+        if (mnu_confirm) {
+            if (c == 'y' || c == 'Y') {
+                uart_puts("y\r\n");
+                mnu_save();
+                mnu_finish_exit();
+            } else if (c == 'n' || c == 'N') {
+                uart_puts("n\r\n");
+                mnu_finish_exit();
+            } else if (c == 24) { /* Ctrl+X again confirms quit without saving */
+                mnu_finish_exit();
+            }
+            return;
+        }
+        if (c == 19) { /* Ctrl+S */
             mnu_save();
+            prompt();
             return;
         }
         if (c == 24) { /* Ctrl+X */
@@ -197,16 +232,17 @@ void cli_poll(void) {
         }
         if (c == '\r' || c == '\n') {
             uart_puts("\r\n");
-            if (mnu_len + 1 < sizeof mnu_buf) mnu_buf[mnu_len++] = '\n';
+            if (mnu_len + 1 < sizeof mnu_buf) { mnu_buf[mnu_len++] = '\n'; mnu_unsaved = 1; }
             prompt();
             return;
         }
         if ((c == 8 || c == 127)) {
-            if (mnu_len) { --mnu_len; uart_puts("\b \b"); }
+            if (mnu_len) { --mnu_len; mnu_unsaved = 1; uart_puts("\b \b"); }
             return;
         }
         if (c >= 32 && c <= 126 && mnu_len + 1 < sizeof mnu_buf) {
             mnu_buf[mnu_len++] = (char)c;
+            mnu_unsaved = 1;
             char out[2] = { (char)c, 0 };
             uart_puts(out);
         }

@@ -407,6 +407,28 @@ int ext4_ls_path(const char *path) {
     return ext4_ls_dir(target);
 }
 
+int ext4_cat(const char *path) {
+    if (!path || !path[0]) return -1;
+    u32 ino = 0;
+    if (ext4_resolve_path(path, &ino)) return -1;
+    u8 inb[256];
+    if (ext4_read_inode(ino, inb)) return -1;
+    if ((le16(inb) & 0xf000) != 0x8000) return -1; /* regular file only */
+    u32 len = le32(inb + 4);
+    if (len == 0) { uart_puts("\r\n"); return 0; }
+    if (len > 1024) return -1;
+    u32 pblk = ext4_extent_bmap(inb, 0);
+    if (!pblk) return -1;
+    if (read_1k(pblk, blk_buf4)) return -1;
+    for (u32 i = 0; i < len; ++i) {
+        char ch = (char)blk_buf4[i];
+        if (ch == '\n') uart_puts("\r\n");
+        else { char out[2] = { ch, 0 }; uart_puts(out); }
+    }
+    uart_puts("\r\n");
+    return 0;
+}
+
 void ext4_pwd(void) {
     uart_puts(s_cwd_path);
     uart_puts("\r\n");

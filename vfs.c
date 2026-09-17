@@ -102,3 +102,8 @@ int vfs_write_file(const char *path, const void *data, u32 len) {
     return -1;
 }
 
+int vfs_cat(const char *path) {
+    if (disk && ext4_mounted()) return ext4_cat(path);
+    return -1;
+}
+
