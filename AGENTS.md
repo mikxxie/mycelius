@@ -26,8 +26,18 @@
   without disk.
 - **Project renamed from `mycelis` to `mycelius`** — all output artifacts,
   source files, and directory renamed accordingly.
-- MNU (Mycelius New Utility) CLI command added: shows welcome message with
-  save/exit key instructions.
+- **Git repo initialized** at project root — always `git add`/`git commit`
+  after batches of changes so work can be recovered; never delete history.
+- MNU (Mycelius New Utility) CLI command implemented and verified in QEMU:
+  - `mnu` opens an editor prompt: welcome message, save/exit instructions,
+    and a `>` prompt instead of `mycelius>`.
+  - `mnu <name>` (e.g. `mnu file.txt`) echoes `File: file.txt` on entry.
+  - Ctrl+S (0x13) saves and prints `[<name>] saved`, or `[New File] saved`
+    when no name was given.
+  - Ctrl+X (0x24) exits; pressing it again confirms when changes are unsaved
+    (shows `Save changes before exit? y/n`).
+  - Editor text is currently an in-memory buffer in `cli.c`; not yet
+    persisted to ext4.
 
 ## Next work, in required order
 
@@ -35,3 +45,4 @@
 2. Build per-task EL0 translation tables and transition the drivers into isolated
    EL0 user processes.
 3. Verify MNU CLI displays correctly and ext4 ls/persistence works across reboots.
+4. Consider persisting MNU editor buffer to ext4 on Ctrl+S.
