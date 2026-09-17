@@ -24,9 +24,6 @@ static void prompt(void); /* forward declaration */
 /* Save current MNU file and mark as saved */
 static void mnu_save(void) {
     if (mnu_filename) {
-        u32 n = mnu_filename < 31 ? mnu_filename : 31;
-        for (u32 i = 0; i < n; ++i) mnu_save_name[i] = line[i];
-        mnu_save_name[n] = 0;
         uart_puts("[");
         uart_puts(mnu_save_name);
         uart_puts("] saved\r\n");
@@ -48,12 +45,6 @@ static void mnu_exit(void) {
 
 /* Handle MNU mode input */
 static void mnu_handle_input(void) {
-    if (mnu_filename) {
-        u32 n = mnu_filename < 31 ? mnu_filename : 31;
-        uart_puts("File: ");
-        for (u32 i = 0; i < n; ++i) uart_puts((const char[1]){line[i]});
-        uart_puts("\r\n");
-    }
     uart_puts("Welcome to the MNU (Mycelius New Utility)\r\n");
     uart_puts("To save a file, press CTRL + S\r\n");
     uart_puts("To exit, press CTRL + X and press it again to confirm if unsaved.\r\n");
@@ -126,28 +117,6 @@ static void do_rm(const char *args) {
     else if (r) uart_puts("rm: cannot remove\r\n");
 }
 
-/* Display help */
-        "ps             - Show task status\r\n"
-        "mem            - Show free memory (4KiB pages)\r\n"
-        "run cli        - Start user CLI\r\n"
-        "pwd            - Show current working directory\r\n"
-        "ls             - List directory contents\r\n"
-        "ls <path>      - List directory at path\r\n"
-        "cd <dir>       - Change directory\r\n"
-        "mkdir <dir>    - Create directory\r\n"
-        "rm [-r|--recursive] <path> - Remove file/directory\r\n"
-        "net status     - Show network status\r\n"
-        "net up         - Enable network\r\n"
-        "net down       - Disable network\r\n"
-        "virtio         - Show virtio device status\r\n"
-        "blk read0      - Read sector 0 from disk\r\n"
-        "ext4 probe     - Check ext4 filesystem validity\r\n"
-        "ext4 ls        - List ext4 root directory\r\n"
-        "restart net    - Restart virtio-net driver\r\n"
-        "restart blk    - Restart virtio-blk driver\r\n"
-        "mnu            - Show Mycelius New Utility menu\r\n");
-}
-
 /* Main command execution */
 static void execute(void) {
     if (same(line, "help")) help_disp();
@@ -176,16 +145,15 @@ static void execute(void) {
         mnu_filename = 0;
         mnu_save_name[0] = 0;
         /* Check if a filename was provided */
-        const char *a = arg(line, 1);
+        const char *a = arg(line, 3);
         if (a && *a) {
             u32 i = 0;
-            while (a[i] && i < sizeof line - 1) { line[i] = a[i]; i++; }
-            line[i] = 0;
+            while (a[i] && i < 31) { mnu_save_name[i] = a[i]; i++; }
+            mnu_save_name[i] = 0;
             mnu_filename = i;
             /* Display filename */
-            u32 n = mnu_filename < 31 ? mnu_filename : 31;
             uart_puts("File: ");
-            for (u32 j = 0; j < n; ++j) uart_puts((const char[1]){line[j]});
+            uart_puts(mnu_save_name);
             uart_puts("\r\n");
         }
         mnu_handle_input();
