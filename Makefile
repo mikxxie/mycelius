@@ -27,14 +27,21 @@ mycelius.bin: mycelius.elf
 %.o: %.S
 	$(CC) $(CFLAGS) -c $< -o $@
 
+QEMU ?= qemu-system-aarch64
+QEMU_DISPLAY ?= gtk
+QEMU_COMMON := -M virt -cpu cortex-a72 -m 16M -kernel mycelius.bin -netdev user,id=net0 -device virtio-net-device,netdev=net0
+
 run: mycelius.bin
-	qemu-system-aarch64 -M virt -cpu cortex-a72 -m 16M -kernel $< -nographic -device virtio-net-device
+	$(QEMU) $(QEMU_COMMON) -nographic
+
+run-gui: mycelius.bin
+	$(QEMU) $(QEMU_COMMON) -display $(QEMU_DISPLAY) -serial mon:stdio
 
 disk:
 	@test -e mycelius.img || qemu-img create -f raw mycelius.img 8M
 
 run-disk: mycelius.bin disk
-	qemu-system-aarch64 -M virt -cpu cortex-a72 -m 16M -kernel $< -nographic -device virtio-net-device -drive if=none,file=mycelius.img,format=raw,id=blk0 -device virtio-blk-device,drive=blk0
+	$(QEMU) $(QEMU_COMMON) -nographic -drive if=none,file=mycelius.img,format=raw,id=blk0 -device virtio-blk-device,drive=blk0
 
 format-disk: disk
 	mkfs.ext4 -F mycelius.img
@@ -46,4 +53,4 @@ clean:
 	rm -f $(OBJS) mycelius.elf mycelius.bin
 	$(MAKE) -C userspace clean
 
-.PHONY: all run run-disk disk format-disk size clean userspace
+.PHONY: all run run-gui run-disk disk format-disk size clean userspace

@@ -1,4 +1,6 @@
-# Mycelis agent handoff
+# Mycelius agent handoff
+
+Project overview, build/run instructions, and repo layout: see INSTRUCTIONS.md.
 
 ## Project constraints
 
@@ -32,6 +34,13 @@
     by host `e2fsck`.
 - Shell VFS routes to ext4 when mounted, and falls back to RAM VFS when running
   without disk.
+- virtio-net stack (legacy transport, verified in QEMU):
+  - MMIO discovery, MAC read from config space, rx queue 0 + tx queue 1.
+  - Synchronous `virtio_net_rx` / `virtio_net_tx` with correct used-ring
+    accounting (per-completion ring element, not just ring[0]).
+  - Ethernet framing, ARP (request/reply + small cache), IPv4, ICMP echo.
+  - `net ping <ip>` resolves via ARP then ICMP echo; guest→host ping to
+    10.0.2.2 verified end-to-end. Host→guest depends on slirp ARP behaviour.
 - **Project renamed from `mycelis` to `mycelius`** — all output artifacts,
   source files, and directory renamed accordingly.
 - **Git repo initialized** at project root — always `git add`/`git commit`
@@ -55,6 +64,8 @@
 
 ## Next work, in required order
 
-1. Proceed with the virtio-net queue, Ethernet framing, ARP, IPv4 and ICMP.
+1. ~~Proceed with the virtio-net queue, Ethernet framing, ARP, IPv4 and ICMP.~~
+   Done — see the virtio-net stack notes above.
 2. Build per-task EL0 translation tables and transition the drivers into isolated
    EL0 user processes.
+3. Development headers / syscall surface, then GUI (see INSTRUCTIONS.md roadmap).

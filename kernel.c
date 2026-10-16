@@ -58,11 +58,13 @@ void kernel_main(void) {
     (void)task_create(2, 0x0a000200UL, 0x200); /* virtio-blk driver */
     virtio_net_driver();
     virtio_blk_driver();
+    net_init();
+    net_set_up(1);
     if (ext4_mount() == 0) {
         vfs_use_ext4();
         uart_puts("mycelius: ext4 mounted read-write\r\n");
     }
     uart_puts("mycelius> type 'help'\r\nmycelius> ");
-    for (;;) { driver_supervise(); cli_poll(); }
+    for (;;) { driver_supervise(); net_poll(); cli_poll(); }
 }
 void kernel_after_user(void) { uart_puts("mycelius: EL0 test returned\r\nmycelius> "); for (;;) cli_poll(); }

@@ -8,7 +8,12 @@ struct device { u64 base; u32 id; };
 static struct device devices[8];
 static u32 count;
 static u8 legacy_queue[8][8192] __attribute__((aligned(4096)));
+static u8 legacy_tx_queue[8][8192] __attribute__((aligned(4096)));
 static u8 sector0[512] __attribute__((aligned(16)));
+static u8 net_tx_hdr[10] __attribute__((aligned(16)));
+static volatile u8 net_tx_status;
+static u16 net_tx_seen;
+static u16 net_rx_seen;
 struct desc { u64 addr; u32 len; u16 flags, next; };
 struct blk_header { u32 type, reserved; u64 sector; };
 static struct blk_header request __attribute__((aligned(16)));
@@ -26,11 +31,18 @@ void virtio_probe(void) {
          * two contiguous 4 KiB pages: descriptor/avail then page-aligned used. */
         if (version == 1) {
             R(base, 0x070) = 0; R(base, 0x070) = 1 | 2;
-            R(base, 0x028) = 4096; R(base, 0x030) = 0;
+            R(base, 0x028) = 4096;
             u32 max = R(base, 0x034); if (!max) continue;
+            R(base, 0x030) = 0;
             R(base, 0x038) = max < 8 ? max : 8;
             R(base, 0x03c) = 4096;
             R(base, 0x040) = (u32)((u64)&legacy_queue[count][0] >> 12);
+            if (id == 1) { /* legacy virtio-net: queue 1 is transmit */
+                R(base, 0x030) = 1;
+                R(base, 0x038) = max < 8 ? max : 8;
+                R(base, 0x03c) = 4096;
+                R(base, 0x040) = (u32)((u64)&legacy_tx_queue[count][0] >> 12);
+            }
             R(base, 0x070) |= 4;
         } else if (version != 2) continue;
         devices[count++] = (struct device){ base, id };
@@ -41,7 +53,9 @@ void virtio_status(void) {
     for (u32 i = 0; i < count; ++i) {
         uart_puts("virtio: ");
         uart_puts(devices[i].id == 1 ? "net" : devices[i].id == 2 ? "blk" : "other");
-        uart_puts(" device discovered\r\n");
+        uart_puts(" device discovered (version ");
+        hex(R(devices[i].base, 0x004));
+        uart_puts(")\r\n");
     }
 }
 static u16 blk_used_seen = 0;
@@ -118,3 +132,76 @@ int virtio_blk_flush(void) {
 }
 
 int virtio_blk_read0(void) { return virtio_blk_read(0, sector0); }
+
+static u32 net_slot(void) {
+    for (u32 i = 0; i < count; ++i) if (devices[i].id == 1) return i;
+    return 8;
+}
+
+void virtio_net_debug(void) {
+    for (u32 i = 0; i < count; ++i) {
+        u64 base = devices[i].base;
+        uart_puts("virtio: id=");
+        hex(devices[i].id);
+        uart_puts(" status=");
+        hex(R(base, 0x070));
+        uart_puts("\r\n");
+    }
+}
+
+int virtio_net_mac(u8 *mac) {
+    u32 slot = net_slot();
+    if (slot == 8) return -1;
+    u32 lo = R(devices[slot].base, 0x100), hi = R(devices[slot].base, 0x104);
+    mac[0] = (u8)(lo & 0xff); mac[1] = (u8)((lo >> 8) & 0xff);
+    mac[2] = (u8)((lo >> 16) & 0xff); mac[3] = (u8)((lo >> 24) & 0xff);
+    mac[4] = (u8)(hi & 0xff); mac[5] = (u8)((hi >> 8) & 0xff);
+    return 0;
+}
+
+int virtio_net_rx(void *buf, u32 cap) {
+    u32 slot = net_slot();
+    if (slot == 8) return -1;
+    u8 *q = legacy_queue[slot]; struct desc *d = (struct desc *)q;
+    volatile u16 *avail = (volatile u16 *)(q + 16 * 8);
+    volatile u16 *used = (volatile u16 *)(q + 4096);
+    d[0] = (struct desc){ (u64)buf, cap, 2, 0 }; /* device writes hdr + frame */
+    u16 index = avail[1]; avail[2 + (index & 7)] = 0; barrier(); avail[1] = index + 1;
+    barrier();
+    R(devices[slot].base, 0x050) = 0; /* notify rx queue */
+    for (u32 spins = 0; spins < 2000000; ++spins) {
+        barrier();
+        if (used[1] != net_rx_seen) {
+            net_rx_seen = used[1];
+            /* used ring: flags@0, idx@2, then ring[] of {u32 id, u32 len}
+             * starting at byte 4; the current completion is ring[(idx-1)%8]. */
+            u16 elem = (used[1] - 1) & 7;
+            return (int)used[4 + elem * 4] | ((int)used[5 + elem * 4] << 16);
+        }
+    }
+    return -1;
+}
+
+int virtio_net_tx(const void *frame, u32 len) {
+    u32 slot = net_slot();
+    if (slot == 8) return -1;
+    u8 *q = legacy_tx_queue[slot]; struct desc *d = (struct desc *)q;
+    volatile u16 *avail = (volatile u16 *)(q + 16 * 8);
+    volatile u16 *used = (volatile u16 *)(q + 4096);
+    for (u32 i = 0; i < 10; ++i) net_tx_hdr[i] = 0;
+    net_tx_status = 0xff;
+    d[0] = (struct desc){ (u64)net_tx_hdr, 10, 1, 1 };
+    d[1] = (struct desc){ (u64)frame, len, 1, 2 };
+    d[2] = (struct desc){ (u64)&net_tx_status, 1, 2, 0 };
+    u16 index = avail[1]; avail[2 + (index & 7)] = 0; barrier(); avail[1] = index + 1;
+    barrier();
+    R(devices[slot].base, 0x050) = 1; /* notify tx queue */
+    for (u32 spins = 0; spins < 2000000; ++spins) {
+        barrier();
+        if (used[1] != net_tx_seen) {
+            net_tx_seen = used[1];
+            return 0; /* used-ring advance confirms the frame was transmitted */
+        }
+    }
+    return -1;
+}

@@ -92,6 +92,7 @@ static void help_disp(void) {
         "net status     - Show network status\r\n"
         "net up         - Enable network\r\n"
         "net down       - Disable network\r\n"
+        "net ping <ip>  - Ping an IP address (ARP + ICMP echo)\r\n"
         "virtio         - Show virtio device status\r\n"
         "blk read0      - Read sector 0 from disk\r\n"
         "ext4 probe     - Check ext4 filesystem validity\r\n"
@@ -165,7 +166,13 @@ static void execute(void) {
     else if (same(line, "net status")) net_status();
     else if (same(line, "net up")) net_set_up(1);
     else if (same(line, "net down")) net_set_up(0);
+    else if (line[0] == 'n' && line[1] == 'e' && line[2] == 't' && line[3] == ' ' &&
+             line[4] == 'p' && line[5] == 'i' && line[6] == 'n' && line[7] == 'g' &&
+             (line[8] == ' ' || line[8] == 0)) {
+        net_ping(arg(line, 8));
+    }
     else if (same(line, "virtio")) virtio_status();
+    else if (same(line, "net debug")) virtio_net_debug();
     else if (same(line, "blk read0")) uart_puts(virtio_blk_read0() ? "blk: read failed\r\n" : "blk: sector 0 read complete\r\n");
     else if (same(line, "ext4 probe")) uart_puts(ext4_probe() ? "ext4: no valid superblock\r\n" : "ext4: valid superblock found\r\n");
     else if (same(line, "ext4 ls")) { if (ext4_ls_root()) uart_puts("ext4: unsupported or unreadable root\r\n"); }
