@@ -9,8 +9,23 @@ typedef unsigned long u64;
 #define PAGE_SIZE 4096UL
 #define MAX_TASKS 4
 
+/* EL0 task virtual address layout. Each task maps its own pages at the same
+ * VA; the physical backing differs per task. */
+#define TASK_CODE_VA 0x00400000UL
+#define TASK_STACK_VA 0x00402000UL
+#define TASK_IPC_VA   0x00404000UL
+
 enum task_state { TASK_EMPTY, TASK_READY, TASK_WAITING, TASK_FAULTED };
-struct task { u32 id; enum task_state state; u64 mmio_base; u64 mmio_size; };
+struct task {
+    u32 id;
+    enum task_state state;
+    u64 pgd;             /* physical address of task L0 page table */
+    u64 sp_el0;          /* saved stack pointer */
+    u64 pc;              /* saved program counter */
+    u64 spsr;            /* saved PSTATE on EL0 entry */
+    u64 mmio_base;       // MMIO base address
+    u64 mmio_size;       // MMIO size
+};
 
 void uart_puts(const char *s);
 int uart_getc_nonblock(void);
@@ -23,8 +38,25 @@ void task_restart(u32 id);
 u32 page_free_count(void);
 void cli_poll(void);
 void mmu_init(void);
+u64 mmu_task_init(u32 id);           /* build per-task EL0 translation tables, returns pgd */
+void task_switch(u32 id);            /* switch TTBR0_EL1 + SP_EL0 to task */
+void task_launch(u32 id, u64 a0, u64 a1, u64 a2); /* enter task at EL0 with args */
+void mmu_map_page(u64 *pgd, u64 va, u64 pa, u64 attr); /* map a page into a task table */
+void task_switch(u32 id);            /* switch TTBR0_EL1 + SP_EL0 to task */
+void task_launch(u32 id, u64 a0, u64 a1, u64 a2); /* enter task at EL0 with args */
+extern u64 l0[512]; /* kernel level-0 page table, defined in mmu.c */
+
+/* Page table attribute bits (match mmu.c) */
+#define MMU_T 3UL
+#define MMU_B 1UL
+#define MMU_P 3UL
+#define MMU_AF (1UL << 10)
+#define MMU_SH (3UL << 8)
+#define MMU_U (1UL << 6)
+#define MMU_PXN (1UL << 53)
+#define MMU_UXN (1UL << 54)
 void user_cli_start(void);
-void user_exception(u64 x0, u64 syscall);
+void user_exception(u64 x0, u64 x1, u64 x2, u64 x3, u64 x4, u64 x5, u64 x6, u64 x7, u64 syscall);
 void kernel_after_user(void);
 void vfs_init(void);
 void vfs_pwd(void);
@@ -66,5 +98,7 @@ void ext4_pwd(void);
 void ipc_init(void);
 int ipc_send(u32 from, u32 to, u32 type, u64 value);
 int ipc_recv(u32 to, u32 *from, u32 *type, u64 *value);
+void virtio_net_driver_entry(u64 mmio_base, u64 task_id, u64 ipc_va);
+void virtio_blk_driver_entry(u64 mmio_base, u64 task_id, u64 ipc_va);
 void virtio_net_driver(void);
 void virtio_blk_driver(void);

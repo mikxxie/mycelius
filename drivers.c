@@ -1,13 +1,31 @@
 #include "kernel.h"
-/* These are driver images' logic contracts.  They must ultimately execute at
- * EL0; the early bring-up calls them as stubs so hardware is never touched
- * from the kernel while EL0 page-table/context switching is being added. */
-void virtio_net_driver(void) {
-    /* EL0 only: negotiate virtio feature bits, own its 0x0a000000 MMIO mapping,
-       then ipc_send(1, 0, EVENT_RX, descriptor_address) on an RX interrupt. */
-    uart_puts("mycelius: virtio-net driver registered\r\n");
+
+__attribute__((section(".driver_text"), aligned(4096)))
+void virtio_net_driver_entry(u64 mmio_base, u64 task_id, u64 ipc_va) {
+    volatile u32 *mmio = (volatile u32 *)mmio_base;
+    volatile u32 *ipc = (volatile u32 *)ipc_va;
+    u32 dev_id = mmio[2];
+    ipc[0] = dev_id;
+    uart_puts("mycelius: net driver: wrote IPC, calling SVC #5\r\n");
+    __asm__ volatile(
+        "mov x8, #5\n\t"
+        "svc #0\n\t"
+        : /* no outputs */
+        : "r"(task_id), "r"(0), "r"(1), "r"(dev_id)
+    );
+    uart_puts("mycelius: net driver: returning\r\n");
 }
-void virtio_blk_driver(void) {
-    /* EL0 only: translate block IPC requests into virtio-blk descriptor chains. */
-    uart_puts("mycelius: virtio-blk driver registered\r\n");
+
+__attribute__((section(".driver_text"), aligned(4096)))
+void virtio_blk_driver_entry(u64 mmio_base, u64 task_id, u64 ipc_va) {
+    volatile u32 *mmio = (volatile u32 *)mmio_base;
+    volatile u32 *ipc = (volatile u32 *)ipc_va;
+    u32 dev_id = mmio[2];
+    uart_puts("mycelius: blk driver: reading MAC\r\n");
+    ipc[0] = dev_id;
+    (void)task_id;
+    uart_puts("mycelius: blk driver: wrote IPC, returning\r\n");
 }
+
+void virtio_net_driver(void) { (void)virtio_net_driver_entry; }
+void virtio_blk_driver(void) { (void)virtio_blk_driver_entry; }
