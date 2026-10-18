@@ -18,7 +18,7 @@ static u64 task_l1[MAX_TASKS][512] __attribute__((aligned(4096)));
 static u64 task_l2[MAX_TASKS][512] __attribute__((aligned(4096)));
 static u64 task_l3[MAX_TASKS][512] __attribute__((aligned(4096)));
 static u64 task_l3_mmio[MAX_TASKS][512] __attribute__((aligned(4096)));
-static u64 task_code_pa[MAX_TASKS], task_stack_pa[MAX_TASKS], task_ipc_pa[MAX_TASKS];
+u64 task_code_pa[MAX_TASKS], task_stack_pa[MAX_TASKS], task_ipc_pa[MAX_TASKS];
 void mmu_init(void) {
     l0[0]=(u64)l1a|T; l1a[0]=(u64)l2a|T; l1a[1]=(u64)l2r|T;
     l2r[0]=RAM_BASE|B|AF|SH|UXN; l2a[72]=0x09000000UL|B|(1UL<<2)|AF|PXN|UXN; l2a[80]=0x0a000000UL|B|(1UL<<2)|AF|PXN|UXN; l2a[2]=(u64)l3u|T;
@@ -28,7 +28,9 @@ void mmu_init(void) {
     for(u32 i=0;i<sizeof app/4;i++) ((u32*)code)[i]=app[i];
     __asm__ volatile("msr mair_el1,%0"::"r"(0x04ffUL));
     __asm__ volatile("msr tcr_el1,%0"::"r"(16UL|(1UL<<8)|(1UL<<10)|(3UL<<12)));
-    __asm__ volatile("msr ttbr0_el1,%0"::"r"((u64)l0)); __asm__ volatile("msr vbar_el1,%0"::"r"((u64)vectors));
+    __asm__ volatile("msr ttbr0_el1,%0"::"r"((u64)l0));
+    __asm__ volatile("msr ttbr1_el1,%0"::"r"((u64)l0));
+    __asm__ volatile("msr vbar_el1,%0"::"r"((u64)vectors));
     __asm__ volatile("dsb ish; isb; mrs x0,sctlr_el1; orr x0,x0,#1; orr x0,x0,#4; orr x0,x0,#0x1000; msr sctlr_el1,x0; isb":::"x0","memory");
 }
 /* Build per-task EL0 translation tables. Copies kernel device/RAM mappings
