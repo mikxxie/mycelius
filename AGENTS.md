@@ -66,6 +66,12 @@ Project overview, build/run instructions, and repo layout: see INSTRUCTIONS.md.
 
 1. ~~Proceed with the virtio-net queue, Ethernet framing, ARP, IPv4 and ICMP.~~
    Done — see the virtio-net stack notes above.
-2. Build per-task EL0 translation tables and transition the drivers into isolated
-   EL0 user processes.
-3. Development headers / syscall surface, then GUI (see INSTRUCTIONS.md roadmap).
+2. ~~Build per-task EL0 translation tables and transition the drivers into isolated EL0 user processes.~~
+   Page tables and task_launch exist; EL0 driver execution (bring-up) pending.
+3. ~~Development headers / syscall surface~~ - Done — see dev/ directory.
+   C/C++ headers: dev/ipc.h, dev/net.h, dev/drv.h, dev/fs.h, dev/syscall.h,
+   plus C++ wrappers (*.hpp) and umbrella header dev/mycelius.h.
+4. Build per-task EL0 translation tables and transition drivers into isolated
+   EL0 user processes (bring-up: net driver at EL0 hangs on first SVC — debug
+   needed).
+5. GUI (see INSTRUCTIONS.md roadmap).
