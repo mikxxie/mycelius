@@ -44,6 +44,8 @@ The cross toolchain prefix defaults to `aarch64-none-elf-`; override with
 - `cli.c` — the serial shell and MNU editor.
 - `mmu.c`, `ipc.c`, `drivers.c` — MMU, IPC mailboxes, driver stubs.
 - `userspace/` — the EL0 IPC ABI and an example CLI service (separate build).
+- `dev/` — development headers / public syscall ABI (ipc.h, net.h, drv.h,
+  fs.h, syscall.h plus C++ wrappers *.hpp and umbrella dev/mycelius.h).
 - `linker.ld` — kernel link script (loads at 0x40080000).
 
 ## Network
@@ -68,7 +70,7 @@ reliable end-to-end check.
 ## Roadmap
 
 1. virtio-net stack (Ethernet / ARP / IPv4 / ICMP) — **done**.
-2. Per-task EL0 translation tables; move drivers into isolated EL0 processes.
-3. Development headers / syscall surface.
+2. Per-task EL0 translation tables; move drivers into isolated EL0 processes — **in progress**.
+3. Development headers / syscall surface — **done** (see dev/).
 4. GUI (virtio-gpu framebuffer + input) — `make run-gui` is the entry point.
 5. Phone hardware bring-up.
