@@ -46,14 +46,14 @@ u64 mmu_task_init(u32 id) {
     pgd[0] = (u64)l1 | T;
     l1[0] = (u64)l2 | T;            /* task L2 covers [0, 1GB) */
     l1[1] = (u64)l2r | T;           /* kernel RAM at [1GB, 2GB) for exceptions */
-    for (u32 i = 0; i < 512; i++) l2[i] = l2a[i];   /* copy device mappings */
-    u32 mmio_idx = (u32)(((u64)0x0a000000UL + (u64)id * 0x200UL) >> 21) & 511;
-    l2[mmio_idx] = (u64)l3m | T;    /* task MMIO page table */
-    l2[2] = (u64)l3 | T;            /* EL0 code/stack/IPC at [0x400000, 0x600000) */
+    for (u32 i = 0; i < 512; i++) {
+        if (i != 80) l2[i] = l2a[i];   /* copy device mappings, skip index 80 */
+    }
+    l2[80] = (u64)l3m | T;    /* task MMIO page table: VA 0x0a000000 -> l3m */
     l3[0] = task_code_pa[id] | P | AF | SH | U | PXN;   /* code: EL0 RX */
     l3[1] = task_ipc_pa[id] | P | AF | SH | U;          /* IPC: EL0 RW */
     l3[2] = task_stack_pa[id] | P | AF | SH | U | UXN;  /* stack: EL0 RW, no exec */
-    l3m[0] = (0x0a000000UL + (u64)id * 0x200UL) | B | AF | SH | (1UL << 2) | U | UXN; /* MMIO */
+    l3m[0] = 0x0a000000UL | B | AF | SH | (1UL << 2) | U | UXN; /* MMIO: VA 0x0a000000 -> PA 0x0a000000 */
     return (u64)pgd;
 }
 /* Map a 4KB page at VA into the given page table. Walks L0->L1->L2->L3. */
@@ -68,6 +68,9 @@ void user_exception(u64 x0,u64 x1,u64 x2,u64 x3,u64 x4,u64 x5,u64 x6,u64 x7,u64 
     u64 esr;
     __asm__ volatile("mrs %0,esr_el1":"=r"(esr));
     (void)x4; (void)x5; (void)x6; (void)x7;
+    /* Switch back to kernel page table before any kernel access */
+    __asm__ volatile("msr ttbr0_el1, %0" :: "r"((u64)l0));
+    __asm__ volatile("tlbi vmalle1is; dsb ish; isb");
     uart_puts("mycelius: EL0 exception esr=");
     if((esr>>26)==0x15) uart_puts("SVC ");
     uart_puts(" syscall=");
@@ -79,8 +82,6 @@ void user_exception(u64 x0,u64 x1,u64 x2,u64 x3,u64 x4,u64 x5,u64 x6,u64 x7,u64 
     if((esr>>26)==0x15 && syscall==3) uart_puts((const char*)x0);
     if((esr>>26)==0x15 && syscall==4) {
         /* Driver done: switch back to kernel TTBR0 and return to EL1. */
-        __asm__ volatile("msr ttbr0_el1, %0" :: "r"((u64)l0));
-        __asm__ volatile("tlbi vmalle1is; dsb ish; isb");
         __asm__ volatile("msr elr_el1, %0" :: "r"((u64)kernel_after_user));
         __asm__ volatile("msr spsr_el1, %0" :: "r"(0x3c5UL));
     }

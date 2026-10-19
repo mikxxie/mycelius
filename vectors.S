@@ -3,28 +3,25 @@
 .global vectors
 .extern user_exception
 vectors:
-    b el1_sync          // 0x000: sync from EL1 (SVC from driver)
-    b .                 // 0x080: IRQ EL1 SP0
-    b .                 // 0x100: FIQ EL1 SP0
-    b .                 // 0x180: SError EL1 SP0
-    b el1_sync          // 0x200: sync from lower EL (EL0) -> handler
-    b .                 // 0x280: IRQ from lower EL
-    b .                 // 0x300: FIQ from lower EL
-    b .                 // 0x380: SError from lower EL
-el1_sync:               // 0x400: handler entry
-    sub sp, sp, #64
-    stp x0, x1, [sp]
-    stp x2, x3, [sp, #16]
-    stp x4, x5, [sp, #32]
-    stp x6, x7, [sp, #48]
-    bl user_exception      // x0-x7 preserved, x8 = syscall number
-    ldp x0, x1, [sp]
-    ldp x2, x3, [sp, #16]
-    ldp x4, x5, [sp, #32]
-    ldp x6, x7, [sp, #48]
-    add sp, sp, #64
+    b el0_sync          // 0x000: Current EL0 sync (SVC, etc.)
+    b .                 // 0x080: Current EL0 IRQ
+    b .                 // 0x100: Current EL0 FIQ
+    b .                 // 0x180: Current EL0 SError
+    b .                 // 0x200: EL1 sync
+    b .                 // 0x280: EL1 IRQ
+    b .                 // 0x300: EL1 FIQ
+    b .                 // 0x380: EL1 SError
+el0_sync:
+    /* Save x0-x7 */
+    stp x0, x1, [sp, #-16]!
+    stp x2, x3, [sp, #-16]!
+    stp x4, x5, [sp, #-16]!
+    stp x6, x7, [sp, #-16]!
+    /* x8 already has syscall number */
+    bl user_exception
+    /* Restore registers */
+    ldp x6, x7, [sp], #16
+    ldp x4, x5, [sp], #16
+    ldp x2, x3, [sp], #16
+    ldp x0, x1, [sp], #16
     eret
-    .space 124
-    .rept 7
-    b .; .space 124
-    .endr
