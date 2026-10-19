@@ -49,6 +49,30 @@ void driver_supervise(void) {
 
 void mmu_map_page(u64 *pgd, u64 va, u64 pa, u64 attr);
 
+/* Switch to task's EL0 translation table and context. */
+void task_switch(u32 id) {
+    if (id >= MAX_TASKS || tasks[id].state == TASK_EMPTY) return;
+    __asm__ volatile("msr ttbr0_el1, %0" :: "r"(tasks[id].pgd));
+    __asm__ volatile("tlbi vmalle1is; dsb ish; isb");
+    __asm__ volatile("msr sp_el0, %0" :: "r"(tasks[id].sp_el0));
+    __asm__ volatile("msr elr_el1, %0" :: "r"(tasks[id].pc));
+    __asm__ volatile("msr spsr_el1, %0" :: "r"(tasks[id].spsr));
+}
+
+/* Enter task at EL0 with arguments in x0-x2. Does not return; control comes
+ * back via SVC/exception into user_exception. */
+void task_launch(u32 id, u64 a0, u64 a1, u64 a2) {
+    task_switch(id);
+    __asm__ volatile(
+        "mov x0, %0\n\t"
+        "mov x1, %1\n\t"
+        "mov x2, %2\n\t"
+        "eret"
+        :: "r"(a0), "r"(a1), "r"(a2)
+    );
+    for (;;) {}
+}
+
 void kernel_main(void) {
     uart_puts("mycelius: Thank you for using mycelius! The system has started successfully\r\n");
     ipc_init();
