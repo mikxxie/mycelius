@@ -85,7 +85,35 @@ void kernel_main(void) {
     tasks[1].pgd = mmu_task_init(1);
     tasks[2].pgd = mmu_task_init(2);
 
-    /* EL0 driver isolation - bring-up in progress */
+    /* Map driver code at its native VA in task page tables */
+    mmu_map_page((u64 *)tasks[1].pgd, TASK_CODE_VA,
+                 (u64)&virtio_net_driver_entry & ~0xFFF,
+                 MMU_P | MMU_AF | MMU_SH | MMU_U | MMU_PXN);
+    mmu_map_page((u64 *)tasks[2].pgd, TASK_CODE_VA,
+                 (u64)&virtio_blk_driver_entry & ~0xFFF,
+                 MMU_P | MMU_AF | MMU_SH | MMU_U | MMU_PXN);
+
+    /* Map IPC page in task page tables */
+    u64 ipc_page = (u64)page_alloc();
+    mmu_map_page((u64 *)tasks[1].pgd, TASK_IPC_VA, ipc_page,
+                 MMU_P | MMU_AF | MMU_SH | MMU_U);
+    mmu_map_page((u64 *)tasks[2].pgd, TASK_IPC_VA, ipc_page,
+                 MMU_P | MMU_AF | MMU_SH | MMU_U);
+
+    /* Map net device MMIO window into task page tables */
+    mmu_map_page((u64 *)tasks[1].pgd, 0x0a000000UL, 0x0a000000UL,
+                 MMU_P | MMU_AF | MMU_SH | MMU_U);
+    mmu_map_page((u64 *)tasks[2].pgd, 0x0a000200UL, 0x0a000200UL,
+                 MMU_P | MMU_AF | MMU_SH | MMU_U);
+
+    tasks[1].sp_el0 = TASK_STACK_VA + 4096 - 16;
+    tasks[1].pc = TASK_CODE_VA;
+    tasks[1].spsr = 0x00000000;  /* EL0t, SP_EL0 */
+    tasks[2].sp_el0 = TASK_STACK_VA + 4096 - 16;
+    tasks[2].pc = TASK_CODE_VA;
+    tasks[2].spsr = 0x00000000;
+
+    /* EL0 driver transition - bring-up in progress */
     uart_puts("mycelius: EL0 driver isolation (bring-up)\r\n");
 
     net_init();
