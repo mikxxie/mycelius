@@ -7,15 +7,15 @@ namespace mycelius {
 
 class Message {
 public:
-    uint32_t type;
-    uint32_t reserved;
-    uint64_t value;
+    u32 type;
+    u32 reserved;
+    u64 value;
 
     Message() : type(0), reserved(0), value(0) {}
-    Message(uint32_t t, uint64_t v) : type(t), reserved(0), value(v) {}
+    Message(u32 t, u64 v) : type(t), reserved(0), value(v) {}
 };
 
-enum class MessageType : unsigned {
+enum class MessageType : u32 {
     None = MYCELIUS_MSG_NONE,
     ArpReply = MYCELIUS_MSG_ARP_REPLY,
     BlkRequest = MYCELIUS_MSG_BLK_REQUEST,

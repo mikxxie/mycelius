@@ -13,8 +13,9 @@
 #define MYCELIUS_O_CREAT   0x0008
 #define MYCELIUS_O_TRUNC   0x0010
 #define MYCELIUS_O_APPEND  0x0020
+#define MYCELIUS_O_NONBLOCK 0x0004
 
-/* File open return value: negative on error, file descriptor >= 0 */
+/* File descriptor type */
 typedef int mycelius_fd_t;
 
 /* Open a file. Returns fd >= 0 on success, negative on error. */
@@ -54,3 +55,19 @@ int mycelius_read_file(const char *path, void **buf_out);
 
 /* Write file contents from buf. Returns 0 on success, -1 on error. */
 int mycelius_write_file(const char *path, const void *buf, size_t len);
+
+/* File stat info */
+struct mycelius_stat {
+    u64 st_size;
+    u64 st_mode;   /* mode bits */
+    u64 st_atime;  /* access time */
+    u64 st_mtime;  /* modification time */
+    u64 st_ctime;  /* change time */
+    u64 st_ino;    /* inode number */
+};
+
+/* stat a file */
+int mycelius_stat(const char *path, struct mycelius_stat *st);
+
+/* fstat a file descriptor */
+int mycelius_fstat(mycelius_fd_t fd, struct mycelius_stat *st);
