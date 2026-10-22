@@ -68,6 +68,10 @@ Project overview, build/run instructions, and repo layout: see INSTRUCTIONS.md.
    Done — see the virtio-net stack notes above.
 2. ~~Build per-task EL0 translation tables and transition the drivers into isolated EL0 user processes.~~
    Page tables and task_launch exist; EL0 driver execution (bring-up) pending.
+   Debug needed: `net driver at EL0` task_launch hangs after `task_switch done, about to eret`
+   — the driver's SVC #4 does not return to kernel_after_user; EL0 translation/context
+   needs debugging (MMIO mapping, page-table mapping of driver code, or SVC handler
+   not returning correctly).
 3. ~~Development headers / syscall surface~~ - Done — see dev/ directory.
    C/C++ headers: dev/ipc.h, dev/net.h, dev/drv.h, dev/fs.h, dev/syscall.h,
    plus C++ wrappers (*.hpp) and umbrella header dev/mycelius.h.

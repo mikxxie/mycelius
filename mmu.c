@@ -83,7 +83,7 @@ void user_exception(u64 x0,u64 x1,u64 x2,u64 x3,u64 x4,u64 x5,u64 x6,u64 x7,u64 
     if((esr>>26)==0x15 && syscall==4) {
         /* Driver done: switch back to kernel TTBR0 and return to EL1. */
         __asm__ volatile("msr elr_el1, %0" :: "r"((u64)kernel_after_user));
-        __asm__ volatile("msr spsr_el1, %0" :: "r"(0x3c5UL));
+        __asm__ volatile("msr spsr_el1, %0" :: "r"(0x3c4UL));  /* EL1h */
     }
     if((esr>>26)==0x15 && syscall==5) { /* ipc_send(from,to,type,value) */
         ipc_send((u32)x0,(u32)x1,(u32)x2,x3);
