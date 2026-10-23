@@ -30,16 +30,13 @@ For a 4KB page at VA `0x400000`:
 ### Task Table (mmu_task_init)
 
 `mmu_task_init(u32 id)` builds per-task page tables:
-- Maps driver code at `0x400000` (TASK_CODE_VA)
+- Maps driver code at `0x400000` (`TASK_CODE_VA`)
+- Maps driver stack at `0x402000` (`TASK_STACK_VA`)
 - Maps IPC page at `0x00404000` (`TASK_IPC_VA`)
-- Maps the assigned MMIO page at `0x00403000` (`NET_MMIO_VA`)
+- Maps assigned MMIO page at `0x00403000` (`NET_MMIO_VA`)
+- Maps driver-owned virtio queues at `0x00500000` (`TASK_QUEUE0_VA`, `TASK_QUEUE1_VA`), data page at `0x00504000`, and request page at `0x00505000`
 
-Direct use of these distinct roots still faults at `TASK_CODE_VA`. The verified
-bring-up path instead uses `mmu_task_activate()` immediately before each
-sequential probe to replace the established root's four EL0 PTEs (code, stack,
-IPC and MMIO). Kernel RAM, UART and every other device mapping remain EL1-only.
-This isolates the active driver but is not yet a simultaneously runnable
-per-task address-space design.
+Each task has its own root `task_pgd[id]` which is directly installed into `TTBR0_EL1` during `task_switch()`. Kernel RAM is mapped read-only (EL1-only) at L1[1] for exception handling without granting EL0 access to kernel memory.
 
 ### Task Context (struct task in kernel.h)
 
@@ -53,6 +50,10 @@ struct task {
     u64 spsr;             // Saved Program Status Register
     u64 mmio_base;        // Driver's MMIO base
     u64 mmio_size;        // MMIO size
+    u64 queue0_pa;        // Physical address of queue0 ring
+    u64 queue1_pa;        // Physical address of queue1 ring
+    u64 data_pa;          // Physical address of data buffer
+    u64 req_pa;           // Physical address of request buffer
 };
 ```
 
@@ -60,13 +61,13 @@ struct task {
 
 1. `task_launch(id, x0, x1, x2)` calls `task_switch(id)` then `eret`
 2. `task_switch` loads:
-   - `TTBR0_EL1` = established root with the active task's four-page EL0 window
+   - `TTBR0_EL1` = `tasks[id].pgd` (distinct per-task root table)
    - `SP_EL0` = task's stack pointer
    - `ELR_EL1` = task's PC (entry point)
    - `SPSR_EL1` = 0x00000000 (EL0t, SP_EL0, no mask)
 3. `eret` switches to EL0 at `pc`
-4. Driver runs until SVC #4 (exit) or exception
-5. `user_exception` handles it, switches back to kernel TTBR0
+4. Driver runs its queue setup, I/O processing, and communicates with kernel via IPC
+5. `user_exception` handles syscalls (IPC send/recv reinstall task TTBR0_EL1 on return to EL0; exit switches back to kernel TTBR0 and returns to EL1)
 
 ### SPSR_EL1 Values
 
@@ -81,30 +82,24 @@ struct task {
 ## What Works
 
 - Kernel boots to serial shell
-- `net ping 10.0.2.2` works (the kernel-owned bring-up net stack is functional)
-- ext4 mounts read-write
+- Per-task `TTBR0_EL1` roots run both net and block driver probes at EL0 with distinct page tables
+- Driver-owned virtio queue rings, request headers, and data buffers mapped into EL0 address spaces
+- Virtio-blk driver at EL0 performs sector 0 read using physical addresses in DMA descriptors
+- Drivers communicate completion via IPC (`ipc_send`) and exit cleanly via SVC #4
+- `net ping 10.0.2.2` works
+- ext4 mounts read-write and passes host `e2fsck -fn` cleanly
 - `make run`, `make run-disk`, `make run-gui` work
 - Dev headers in `dev/` are complete
-- Page table infrastructure exists in `mmu.c`
 
 ## Current EL0 Bring-Up Status
 
-Net and block EL0 probes are verified in QEMU. Boot initializes the
-kernel-owned transports and mounts ext4 first, then runs the net probe at EL0,
-its SVC #4 return path, the block probe, and finally the shell. This order
-prevents a probe from selecting the non-persistent RAM VFS.
-
-Production queue state and network/block transport remain kernel-owned; direct
-loading of each distinct task root is still an unresolved next step.
+Net and block EL0 drivers are verified in QEMU running under their own distinct `TTBR0_EL1` roots. The root cause of the previous `TASK_CODE_VA` fault (a misdefined `MMU_P` constant causing Level-3 descriptor invalidation, and exception returns failing to re-install task `TTBR0_EL1` on non-exit syscalls) is resolved. The drivers own their queue descriptors and buffers and report status back to the kernel via IPC.
 
 ## Next Steps
 
-1. Resolve the distinct task-root `TASK_CODE_VA` translation fault and run the
-   probes with their own `TTBR0_EL1` roots.
-2. Move queue ownership and bounded request processing into the EL0 drivers.
-4. Replace diagnostic SVC output with validated IPC messages and add fault
+1. Replace diagnostic SVC output with validated IPC messages and add fault
    reporting/restart for non-SVC synchronous exceptions.
-5. Then GUI (virtio-gpu framebuffer).
+2. Then GUI (virtio-gpu framebuffer).
 
 ---
 

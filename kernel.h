@@ -10,12 +10,51 @@ typedef unsigned long u64;
 #define MAX_TASKS 4
 
 /* EL0 task virtual address layout. Each task maps only its code, IPC page,
- * stack, and assigned MMIO window, plus kernel RAM needed for exception
- * handling. */
-#define TASK_CODE_VA 0x00400000UL
-#define TASK_STACK_VA 0x00402000UL
-#define TASK_IPC_VA   0x00404000UL
-#define NET_MMIO_VA   0x00403000UL
+ * stack, MMIO window, and its virtio queue + data pages.
+ * Kernel RAM is present as an EL1-only mapping for exception vector access. */
+#define TASK_CODE_VA   0x00400000UL   /* EL0 code (one 4KB page) */
+#define TASK_STACK_VA  0x00402000UL   /* EL0 stack (one 4KB page) */
+#define TASK_IPC_VA    0x00404000UL   /* IPC mailbox page (EL0 RW) */
+#define NET_MMIO_VA    0x00403000UL   /* MMIO window (one 4KB page) */
+/* Driver-owned virtio queue pages: two 8KB rings (queue0 + queue1 for net). */
+#define TASK_QUEUE0_VA 0x00500000UL   /* queue ring 0, page 0 of 2 */
+#define TASK_QUEUE1_VA 0x00502000UL   /* net tx ring, page 0 of 2 */
+#define TASK_DATA_VA   0x00504000UL   /* 512-byte sector / packet data buffer */
+#define TASK_REQ_VA    0x00505000UL   /* blk_header request struct + status byte */
+
+/* IPC shared page layout (at TASK_IPC_VA physical = task_ipc_pa[id]).
+ * The kernel writes a request; the driver reads it, executes, then writes
+ * the reply in the same page.  A 'ready' flag tells the driver a request
+ * is pending; the driver clears it when the reply is posted. */
+#define IPC_FLAG_IDLE  0u
+#define IPC_FLAG_REQ   1u   /* kernel posted a request */
+#define IPC_FLAG_DONE  2u   /* driver posted the reply  */
+
+/* IPC request types used in ipc_page.req_type. */
+#define DRV_REQ_NONE   0u
+#define DRV_REQ_READ   1u   /* blk: sector read  */
+#define DRV_REQ_WRITE  2u   /* blk: sector write */
+#define DRV_REQ_FLUSH  3u   /* blk: cache flush  */
+#define DRV_REQ_TX     4u   /* net: transmit frame */
+#define DRV_REQ_RX     5u   /* net: receive frame  */
+#define DRV_REQ_EXIT   6u   /* tear-down: driver should SVC exit */
+
+/* Layout of the IPC page.  The kernel pre-fills the setup section before
+ * launching the driver; the driver uses those PAs for virtio descriptors.
+ * Both sides access this page: kernel via PA (identity-mapped RAM), driver
+ * via TASK_IPC_VA.  Keep the struct under 4 KB. */
+struct ipc_page {
+    volatile u32 flag;          /* IPC_FLAG_* */
+    volatile u32 req_type;      /* DRV_REQ_* */
+    volatile u64 sector;        /* blk: sector number */
+    volatile u32 data_len;      /* net: frame length in/out */
+    volatile u32 result;        /* driver reply: 0=ok, non-zero=error */
+    /* Setup section (written by kernel before launch, read by driver) */
+    volatile u64 queue0_pa;     /* PA of driver's queue0 ring (8KB) */
+    volatile u64 queue1_pa;     /* PA of driver's queue1 ring (net tx, 8KB) */
+    volatile u64 data_pa;       /* PA of driver's data page (512 B) */
+    volatile u64 req_pa;        /* PA of driver's req page (blk_header+stat) */
+};
 
 enum task_state { TASK_EMPTY, TASK_READY, TASK_WAITING, TASK_FAULTED };
 struct task {
@@ -25,16 +64,25 @@ struct task {
     u64 sp_el0;          /* saved stack pointer */
     u64 pc;              /* saved program counter */
     u64 spsr;            /* saved PSTATE on EL0 entry */
-    u64 mmio_base;       // MMIO base address
-    u64 mmio_size;       // MMIO size
+    u64 mmio_base;       /* MMIO base physical address */
+    u64 mmio_size;       /* MMIO size in bytes */
+    /* Physical addresses of driver-owned queue/data pages (also accessible
+     * to EL1 via identity-ish kernel mapping of all RAM). */
+    u64 queue0_pa;       /* 8KB virtio ring (queue 0): desc/avail | used */
+    u64 queue1_pa;       /* 8KB virtio ring (queue 1, net tx only) */
+    u64 data_pa;         /* 4KB: sector or packet payload buffer */
+    u64 req_pa;          /* 4KB: virtio blk_header + status byte */
 };
 
 /* Page table attribute bits (match mmu.c) */
-#define MMU_P  1UL
+#define MMU_T  3UL
+#define MMU_B  1UL
+#define MMU_P  3UL
 #define MMU_AF (1UL << 10)
 #define MMU_SH (3UL << 8)
 #define MMU_U  (1UL << 6)
 #define MMU_PXN (1UL << 53)
+#define MMU_UXN (1UL << 54)
 #define MMU_DEVICE (1UL << 2) /* MAIR attribute index 1: device nGnRE */
 
 void uart_puts(const char *s);
@@ -49,7 +97,9 @@ u32 page_free_count(void);
 void cli_poll(void);
 void mmu_init(void);
 u64 mmu_task_init(u32 id);           /* build per-task EL0 translation tables, returns pgd */
-void mmu_task_activate(u32 id, u64 code_pa, u64 mmio_pa);
+void mmu_install_task(u64 pgd_pa);   /* load task pgd into TTBR0_EL1 with TLB flush */
+void mmu_restore_kernel(void);       /* restore shared kernel TTBR0 root */
+u64 task_current_pgd(void);          /* get current task's pgd */
 void task_switch(u32 id);            /* switch TTBR0_EL1 + SP_EL0 to task */
 void task_launch(u32 id, u64 a0, u64 a1, u64 a2); /* enter task at EL0 with args */
 void mmu_map_page(u64 *pgd, u64 va, u64 pa, u64 attr); /* map a page into a task table */
@@ -70,8 +120,8 @@ int ipc_send(u32 from, u32 to, u32 type, u64 value);
 int ipc_recv(u32 to, u32 *from, u32 *type, u64 *value);
 void virtio_net_driver(void);
 void virtio_blk_driver(void);
-void virtio_net_driver_entry(u64 mmio_base, u64 task_id, u64 ipc_va);
-void virtio_blk_driver_entry(u64 mmio_base, u64 task_id, u64 ipc_va);
+void virtio_net_driver_entry(u64 mmio_va, u64 task_id, u64 ipc_va);
+void virtio_blk_driver_entry(u64 mmio_va, u64 task_id, u64 ipc_va);
 void virtio_probe(void);
 void virtio_status(void);
 int virtio_blk_read0(void);

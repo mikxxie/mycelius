@@ -65,17 +65,18 @@ Project overview, build/run instructions, and repo layout: see INSTRUCTIONS.md.
 
 1. ~~Proceed with the virtio-net queue, Ethernet framing, ARP, IPv4 and ICMP.~~
    Done — see the virtio-net stack notes above.
-2. Build per-task EL0 translation tables and transition the drivers into isolated
-   EL0 user processes — EL0 net/block probes are verified in QEMU. Before each
-   sequential probe `mmu_task_activate()` installs only its code, stack, IPC and
-   MMIO pages into the proven EL0 window; kernel RAM/UART/other devices remain
-   EL1-only. Distinct task roots still fault at `TASK_CODE_VA`, so this is not
-   yet simultaneously runnable isolation and virtio queue ownership remains in
-   the kernel.
+2. ~~Build per-task EL0 translation tables and transition the drivers into isolated
+   EL0 user processes~~ — Done. Drivers run under distinct `TTBR0_EL1` roots
+   with their own code, stack, IPC, MMIO, and queue/data/request pages.
 3. ~~Development headers / syscall surface~~ - Done — see dev/ directory.
    C/C++ headers: dev/ipc.h, dev/net.h, dev/drv.h, dev/fs.h, dev/syscall.h,
    plus C++ wrappers (*.hpp) and umbrella header dev/mycelius.h.
    dev/jit.h added for JIT compilation support.
-4. Resolve the distinct task-root code-page translation fault, then move queue
-   ownership out of the kernel.
-5. GUI (see INSTRUCTIONS.md roadmap).
+4. ~~Resolve the distinct task-root code-page translation fault, then move queue
+   ownership out of the kernel.~~ - Done: translation fault resolved (corrected
+   `MMU_P` descriptor bits and TTBR0 restore on syscall return); virtio queues,
+   DMA descriptor chains, and bounded sector-0 reads are executed by EL0 drivers
+   reporting back via IPC.
+5. Replace diagnostic SVC output with validated IPC messages and add fault
+   reporting/restart for non-SVC synchronous exceptions.
+6. GUI (see INSTRUCTIONS.md roadmap).
