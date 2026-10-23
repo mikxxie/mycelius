@@ -53,7 +53,10 @@ void mmu_map_page(u64 *pgd, u64 va, u64 pa, u64 attr);
 void task_switch(u32 id) {
     if (id >= MAX_TASKS || tasks[id].state == TASK_EMPTY) return;
     __asm__ volatile("msr ttbr0_el1, %0" :: "r"(tasks[id].pgd));
-    __asm__ volatile("tlbi vmalle1is; dsb ish; isb");
+    /* Publish the new task tables before invalidating translations.  Without
+     * this DSB, QEMU can retain the kernel's old mapping of TASK_CODE_VA and
+     * EL0 takes a level-3 instruction translation fault. */
+    __asm__ volatile("dsb ishst; tlbi vmalle1is; dsb ish; isb" ::: "memory");
     __asm__ volatile("msr sp_el0, %0" :: "r"(tasks[id].sp_el0));
     __asm__ volatile("msr elr_el1, %0" :: "r"(tasks[id].pc));
     __asm__ volatile("msr spsr_el1, %0" :: "r"(tasks[id].spsr));
@@ -93,18 +96,13 @@ void kernel_main(void) {
                  (u64)&virtio_blk_driver_entry & ~0xFFF,
                  MMU_P | MMU_AF | MMU_SH | MMU_U | MMU_PXN);
 
-    /* Map IPC page in task page tables */
-    u64 ipc_page = (u64)page_alloc();
-    mmu_map_page((u64 *)tasks[1].pgd, TASK_IPC_VA, ipc_page,
-                 MMU_P | MMU_AF | MMU_SH | MMU_U);
-    mmu_map_page((u64 *)tasks[2].pgd, TASK_IPC_VA, ipc_page,
-                 MMU_P | MMU_AF | MMU_SH | MMU_U);
+    /* mmu_task_init allocated a distinct IPC page for each task. */
 
     /* Map net device MMIO window into task page tables at NET_MMIO_VA */
     mmu_map_page((u64 *)tasks[1].pgd, NET_MMIO_VA, 0x0a000000UL,
-                 MMU_P | MMU_AF | MMU_SH | MMU_U);
+                 MMU_P | MMU_AF | MMU_SH | MMU_U | MMU_DEVICE | MMU_PXN);
     mmu_map_page((u64 *)tasks[2].pgd, NET_MMIO_VA, 0x0a000200UL,
-                 MMU_P | MMU_AF | MMU_SH | MMU_U);
+                 MMU_P | MMU_AF | MMU_SH | MMU_U | MMU_DEVICE | MMU_PXN);
 
     tasks[1].sp_el0 = TASK_STACK_VA + 4096 - 16;
     tasks[1].pc = TASK_CODE_VA;
@@ -113,15 +111,10 @@ void kernel_main(void) {
     tasks[2].pc = TASK_CODE_VA;
     tasks[2].spsr = 0x00000000;
 
-    /* Launch EL0 drivers: each reads MMIO, writes IPC page, returns via SVC #4 */
-    uart_puts("mycelius: launching net driver at EL0\r\n");
-    task_launch(1, NET_MMIO_VA, 1, TASK_IPC_VA);
-    uart_puts("mycelius: net driver returned\r\n");
-
-    uart_puts("mycelius: calling virtio_blk_driver_entry at EL0\r\n");
-    task_launch(2, NET_MMIO_VA, 2, TASK_IPC_VA);
-    uart_puts("mycelius: blk driver returned\r\n");
-
+    /* Do not launch these probes yet.  QEMU reports a level-3 instruction
+     * translation fault at TASK_CODE_VA, so launching them would bypass the
+     * kernel's net/ext4 initialization and silently select the RAM VFS. */
+    uart_puts("mycelius: EL0 probe launch deferred (task code mapping fault)\r\n");
     net_init();
     net_set_up(1);
     if (ext4_mount() == 0) {
@@ -133,6 +126,13 @@ void kernel_main(void) {
 }
 
 void kernel_after_user(void) {
-    uart_puts("mycelius: EL0 driver returned\r\nmycelius> ");
-    for (;;) cli_poll();
+    /* Reserved for a verified EL0 exit path. */
+    net_init();
+    net_set_up(1);
+    if (ext4_mount() == 0) {
+        vfs_use_ext4();
+        uart_puts("mycelius: ext4 mounted read-write\r\n");
+    }
+    uart_puts("mycelius> type 'help'\r\nmycelius> ");
+    for (;;) { driver_supervise(); net_poll(); cli_poll(); }
 }

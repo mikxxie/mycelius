@@ -5,7 +5,7 @@
 EL0 is the **least privileged execution level** in AArch64 (ARM64). In Mycelius, EL0 is intended to host **isolated driver processes**. Each driver runs at EL0 with its own translation tables, mapped only to:
 - Its own code page
 - Its own IPC page
-* Its assigned MMIO window (e.g., 0x0a000000 for virtio-net)
+- Its assigned MMIO page, mapped at `NET_MMIO_VA` (`0x00403000`)
 
 This is the core isolation mechanism: a buggy or malicious driver cannot access kernel memory or other drivers' memory.
 
@@ -31,8 +31,8 @@ For a 4KB page at VA `0x400000`:
 
 `mmu_task_init(u32 id)` builds per-task page tables:
 - Maps driver code at `0x400000` (TASK_CODE_VA)
-- Maps IPC page at `0x4001000` (TASK_IPC_VA)
-- Maps MMIO window at `0x0a000000` (device MMIO)
+- Maps IPC page at `0x00404000` (`TASK_IPC_VA`)
+- Maps the assigned MMIO page at `0x00403000` (`NET_MMIO_VA`)
 
 ### Task Context (struct task in kernel.h)
 
@@ -65,44 +65,42 @@ struct task {
 
 | Value | Meaning |
 |-------|---------|
-| `0x00000000` | EL0t, SP_EL0, DAIF all masked |
-| `0x3c0` | EL1h, SP_EL1, DAIF masked |
-| `0x3c5` | EL1h, DAIF masked |
+| `0x00000000` | EL0t, SP_EL0, interrupts unmasked |
+| `0x3c0` | EL0t, SP_EL0, DAIF masked |
+| `0x3c5` | EL1h, SP_EL1, DAIF masked |
 
 ---
 
 ## What Works
 
 - Kernel boots to serial shell
-- `net ping 10.0.2.2` works (virtio-net stack functional)
+- `net ping 10.0.2.2` works (the kernel-owned bring-up net stack is functional)
 - ext4 mounts read-write
 - `make run`, `make run-disk`, `make run-gui` work
 - Dev headers in `dev/` are complete
 - Page table infrastructure exists in `mmu.c`
 
-## What Is Broken (EL0 Bring-Up)
+## Current EL0 Bring-Up Status
 
-`task_launch(1, ...)` calls `eret` to enter EL0, but the system hangs immediately after `task_switch done, about to eret`.
+The task-table setup and small net/block EL0 probe payloads exist, but their
+automatic launch is deliberately disabled. QEMU reports a level-3 instruction
+translation fault at `TASK_CODE_VA` (`0x00400000`) on the initial `eret`, even
+though the kernel-side page-table walk sees the code PTE. Treat the isolation
+work as **bring-up, not verified**.
 
-**Likely causes:**
-1. `virtio_net_driver_entry` uses `uart_puts()` at EL0 — UART is at kernel address `0x09000000`, NOT mapped in task page table → **data abort**
-2. `SPSR_EL1 = 0x00000000` may be incorrect for EL0 execution
-3. The driver code is copied to `task_code_pa` but mapped at `TASK_CODE_VA` — need to verify mapping matches
-4. `net_rx_seen` / `net_tx_seen` static variables in `virtio.c` are kernel-space; accessing them from EL0 faults
-
-**To fix:**
-1. Remove `uart_puts` from driver code (drivers must not call kernel functions directly)
-2. Ensure `SPSR_EL1 = 0x3c0` (EL1h, SP_EL0) for proper EL0 return
-3. Verify `QueuePFN` register is written with correct physical page number
-4. Add debug output after `eret` to confirm EL0 entry
+Boot therefore keeps the working net/block transports in EL1, mounts ext4,
+and then starts the shell. This prevents a failed EL0 probe from entering a
+shell before `ext4_mount()` and accidentally using the non-persistent RAM VFS.
 
 ## Next Steps
 
-1. Fix `virtio_net_driver_entry` — remove `uart_puts`, use IPC page only
-2. Test `task_launch(1, ...)` — should reach SVC #4 and return to `kernel_after_user`
-3. Then implement `net_poll()` processing at EL0 (driver receives packets via IPC)
-4. Then transition blk driver to EL0
-5. Then GUI (virtio-gpu framebuffer)
+1. Resolve the `TASK_CODE_VA` level-3 translation fault, then verify a net
+   probe and a block probe independently in QEMU.
+2. Resume only through a verified EL1 continuation after SVC #4.
+3. Move queue ownership and bounded request processing into the EL0 drivers.
+4. Replace diagnostic SVC output with validated IPC messages and add fault
+   reporting/restart for non-SVC synchronous exceptions.
+5. Then GUI (virtio-gpu framebuffer).
 
 ---
 

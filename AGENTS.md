@@ -61,21 +61,19 @@ Project overview, build/run instructions, and repo layout: see INSTRUCTIONS.md.
     second Ctrl+X also confirms quit. Unsaved state is only tracked after the
     buffer is actually edited (typing/Enter/backspace).
   - `cat <file>` command prints a saved file's contents (`vfs_cat` → `ext4_cat`).
-
 ## Next work, in required order
 
 1. ~~Proceed with the virtio-net queue, Ethernet framing, ARP, IPv4 and ICMP.~~
    Done — see the virtio-net stack notes above.
-2. ~~Build per-task EL0 translation tables and transition the drivers into isolated EL0 user processes.~~
-   Page tables and task_launch exist; EL0 driver execution (bring-up) pending.
-   Debug needed: `net driver at EL0` task_launch hangs after `task_switch done, about to eret`
-   — the driver's SVC #4 does not return to kernel_after_user; EL0 translation/context
-   needs debugging (MMIO mapping, page-table mapping of driver code, or SVC handler
-   not returning correctly).
+2. Build per-task EL0 translation tables and transition the drivers into isolated
+   EL0 user processes — **bring-up not verified**. The task code page currently
+   faults at EL0 entry (`TASK_CODE_VA`, level-3 instruction translation fault in
+   QEMU), so automatic EL0 probe launch is disabled and virtio transport remains
+   in the kernel.
 3. ~~Development headers / syscall surface~~ - Done — see dev/ directory.
    C/C++ headers: dev/ipc.h, dev/net.h, dev/drv.h, dev/fs.h, dev/syscall.h,
    plus C++ wrappers (*.hpp) and umbrella header dev/mycelius.h.
-4. Build per-task EL0 translation tables and transition drivers into isolated
-   EL0 user processes (bring-up: net driver at EL0 hangs on first SVC — debug
-   needed).
+   dev/jit.h added for JIT compilation support.
+4. Resolve the EL0 code-page translation fault, independently verify net and
+   block probes, then move queue ownership out of the kernel.
 5. GUI (see INSTRUCTIONS.md roadmap).

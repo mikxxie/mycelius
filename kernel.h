@@ -35,6 +35,7 @@ struct task {
 #define MMU_SH (3UL << 8)
 #define MMU_U  (1UL << 6)
 #define MMU_PXN (1UL << 53)
+#define MMU_DEVICE (1UL << 2) /* MAIR attribute index 1: device nGnRE */
 
 void uart_puts(const char *s);
 int uart_getc_nonblock(void);

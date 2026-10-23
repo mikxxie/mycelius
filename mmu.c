@@ -17,7 +17,6 @@ static u64 task_pgd[MAX_TASKS][512] __attribute__((aligned(4096)));
 static u64 task_l1[MAX_TASKS][512] __attribute__((aligned(4096)));
 static u64 task_l2[MAX_TASKS][512] __attribute__((aligned(4096)));
 static u64 task_l3[MAX_TASKS][512] __attribute__((aligned(4096)));
-static u64 task_l3_mmio[MAX_TASKS][512] __attribute__((aligned(4096)));
 u64 task_code_pa[MAX_TASKS], task_stack_pa[MAX_TASKS], task_ipc_pa[MAX_TASKS];
 void mmu_init(void) {
     l0[0]=(u64)l1a|T; l1a[0]=(u64)l2a|T; l1a[1]=(u64)l2r|T;
@@ -33,24 +32,23 @@ void mmu_init(void) {
     __asm__ volatile("msr vbar_el1,%0"::"r"((u64)vectors));
     __asm__ volatile("dsb ish; isb; mrs x0,sctlr_el1; orr x0,x0,#1; orr x0,x0,#4; orr x0,x0,#0x1000; msr sctlr_el1,x0; isb":::"x0","memory");
 }
-/* Build per-task EL0 translation tables. Copies kernel device/RAM mappings
- * then adds task-specific EL0 mappings: code, IPC page, stack, MMIO window.
+/* Build per-task EL0 translation tables.  EL0 gets only code, IPC, stack and
+ * its MMIO page; the kernel RAM mapping is EL1-only and exists for exceptions.
  * Returns the physical address of the task's L0 page table. */
 u64 mmu_task_init(u32 id) {
     if (id >= MAX_TASKS) return 0;
     u64 *pgd = task_pgd[id], *l1 = task_l1[id], *l2 = task_l2[id];
-    u64 *l3 = task_l3[id], *l3m = task_l3_mmio[id];
+    u64 *l3 = task_l3[id];
     task_code_pa[id] = (u64)page_alloc();
     task_stack_pa[id] = (u64)page_alloc();
     task_ipc_pa[id]  = (u64)page_alloc();
     pgd[0] = (u64)l1 | T;
     l1[0] = (u64)l2 | T;            /* task L2 covers [0, 1GB) */
     l1[1] = (u64)l2r | T;           /* kernel RAM at [1GB, 2GB) for exceptions */
-    l2[0] = l2[1] = l2[2] = (u64)l3 | T;   /* queues 0,1,2 all point to same l3 */
-    l3[0] = task_code_pa[id] | P | AF | SH | U | PXN;   /* code: EL0 RX */
-    l3[1] = task_ipc_pa[id] | P | AF | SH | U;          /* IPC: EL0 RW */
-    l3[2] = task_stack_pa[id] | P | AF | SH | U | UXN;  /* stack: EL0 RW, no exec */
-    l3m[0] = 0x0a000000UL | B | AF | SH | (1UL << 2) | U | UXN; /* MMIO: VA 0x0a000000 -> PA 0x0a000000 */
+    l2[2] = (u64)l3 | T; /* TASK_* addresses live in the 4 MiB region. */
+    l3[0] = task_code_pa[id] | P | AF | SH | U | PXN;   /* 0x00400000: EL0 RX */
+    l3[2] = task_stack_pa[id] | P | AF | SH | U | UXN;  /* 0x00402000: EL0 RW */
+    l3[4] = task_ipc_pa[id] | P | AF | SH | U | UXN;    /* 0x00404000: EL0 RW */
     return (u64)pgd;
 }
 /* Map a 4KB page at VA into the given page table. Walks L0->L1->L2->L3. */
@@ -68,29 +66,38 @@ void user_exception(u64 x0,u64 x1,u64 x2,u64 x3,u64 x4,u64 x5,u64 x6,u64 x7,u64 
     /* Switch back to kernel page table before any kernel access */
     __asm__ volatile("msr ttbr0_el1, %0" :: "r"((u64)l0));
     __asm__ volatile("tlbi vmalle1is; dsb ish; isb");
+    u64 ec = esr >> 26;
     uart_puts("mycelius: EL0 exception esr=");
-    if((esr>>26)==0x15) uart_puts("SVC ");
+    if (ec == 0x15) uart_puts("SVC ");
+    else if (ec == 0x20) uart_puts("instruction-abort ");
+    else if (ec == 0x24) uart_puts("data-abort ");
+    else uart_puts("unexpected ");
     uart_puts(" syscall=");
     if(syscall==3) uart_puts("3(write)");
     if(syscall==4) uart_puts("4(exit)");
     if(syscall==5) uart_puts("5(ipc_send)");
     if(syscall==6) uart_puts("6(ipc_recv)");
     uart_puts("\r\n");
-    if((esr>>26)==0x15 && syscall==3) uart_puts((const char*)x0);
-    if((esr>>26)==0x15 && syscall==4) {
+    if (ec == 0x15 && syscall == 4) {
         /* Driver done: switch back to kernel TTBR0 and return to EL1. */
         __asm__ volatile("msr elr_el1, %0" :: "r"((u64)kernel_after_user));
-        __asm__ volatile("msr spsr_el1, %0" :: "r"(0x3c4UL));  /* EL1h */
+        __asm__ volatile("msr spsr_el1, %0" :: "r"(0x3c5UL));  /* EL1h, DAIF masked */
     }
-    if((esr>>26)==0x15 && syscall==5) { /* ipc_send(from,to,type,value) */
+    if (ec == 0x15 && syscall == 5) { /* ipc_send(from,to,type,value) */
         ipc_send((u32)x0,(u32)x1,(u32)x2,x3);
     }
-    if((esr>>26)==0x15 && syscall==6) { /* ipc_recv(to,&from,&type,&value) */
+    if (ec == 0x15 && syscall == 6) { /* ipc_recv(to,&from,&type,&value) */
         u32 from,type; u64 value;
         if(ipc_recv((u32)x0,&from,&type,&value)==0) {
             if(x1) *(u32*)x1 = from;
             if(x2) *(u32*)x2 = type;
             if(x3) *(u64*)x3 = value;
         }
+    }
+    if (ec != 0x15 || (syscall != 5 && syscall != 6)) {
+        /* Never ERET back to EL0 with the kernel page table after a fault or
+         * unknown service.  Treat it as a terminated bring-up driver. */
+        __asm__ volatile("msr elr_el1, %0" :: "r"((u64)kernel_after_user));
+        __asm__ volatile("msr spsr_el1, %0" :: "r"(0x3c5UL));
     }
 }
