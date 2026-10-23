@@ -79,13 +79,13 @@ void kernel_main(void) {
     vfs_init();
     mmu_init();
     virtio_probe();
-    (void)task_create(1, 0x0a000000UL, 0x200); /* virtio-net driver */
+    (void)task_create(1, NET_MMIO_VA, 0x200); /* virtio-net driver */
     (void)task_create(2, 0x0a000200UL, 0x200); /* virtio-blk driver */
 
     tasks[1].pgd = mmu_task_init(1);
     tasks[2].pgd = mmu_task_init(2);
 
-    /* Map driver code at its native VA in task page tables */
+    /* Map driver code at TASK_CODE_VA in task page tables */
     mmu_map_page((u64 *)tasks[1].pgd, TASK_CODE_VA,
                  (u64)&virtio_net_driver_entry & ~0xFFF,
                  MMU_P | MMU_AF | MMU_SH | MMU_U | MMU_PXN);
@@ -100,10 +100,10 @@ void kernel_main(void) {
     mmu_map_page((u64 *)tasks[2].pgd, TASK_IPC_VA, ipc_page,
                  MMU_P | MMU_AF | MMU_SH | MMU_U);
 
-    /* Map net device MMIO window into task page tables */
-    mmu_map_page((u64 *)tasks[1].pgd, 0x0a000000UL, 0x0a000000UL,
+    /* Map net device MMIO window into task page tables at NET_MMIO_VA */
+    mmu_map_page((u64 *)tasks[1].pgd, NET_MMIO_VA, 0x0a000000UL,
                  MMU_P | MMU_AF | MMU_SH | MMU_U);
-    mmu_map_page((u64 *)tasks[2].pgd, 0x0a000200UL, 0x0a000200UL,
+    mmu_map_page((u64 *)tasks[2].pgd, NET_MMIO_VA, 0x0a000200UL,
                  MMU_P | MMU_AF | MMU_SH | MMU_U);
 
     tasks[1].sp_el0 = TASK_STACK_VA + 4096 - 16;
@@ -113,8 +113,14 @@ void kernel_main(void) {
     tasks[2].pc = TASK_CODE_VA;
     tasks[2].spsr = 0x00000000;
 
-    /* EL0 driver transition - bring-up in progress */
-    uart_puts("mycelius: EL0 driver isolation (bring-up)\r\n");
+    /* Launch EL0 drivers: each reads MMIO, writes IPC page, returns via SVC #4 */
+    uart_puts("mycelius: launching net driver at EL0\r\n");
+    task_launch(1, NET_MMIO_VA, 1, TASK_IPC_VA);
+    uart_puts("mycelius: net driver returned\r\n");
+
+    uart_puts("mycelius: calling virtio_blk_driver_entry at EL0\r\n");
+    task_launch(2, NET_MMIO_VA, 2, TASK_IPC_VA);
+    uart_puts("mycelius: blk driver returned\r\n");
 
     net_init();
     net_set_up(1);

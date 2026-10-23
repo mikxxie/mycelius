@@ -46,10 +46,7 @@ u64 mmu_task_init(u32 id) {
     pgd[0] = (u64)l1 | T;
     l1[0] = (u64)l2 | T;            /* task L2 covers [0, 1GB) */
     l1[1] = (u64)l2r | T;           /* kernel RAM at [1GB, 2GB) for exceptions */
-    for (u32 i = 0; i < 512; i++) {
-        if (i != 80) l2[i] = l2a[i];   /* copy device mappings, skip index 80 */
-    }
-    l2[80] = (u64)l3m | T;    /* task MMIO page table: VA 0x0a000000 -> l3m */
+    l2[0] = l2[1] = l2[2] = (u64)l3 | T;   /* queues 0,1,2 all point to same l3 */
     l3[0] = task_code_pa[id] | P | AF | SH | U | PXN;   /* code: EL0 RX */
     l3[1] = task_ipc_pa[id] | P | AF | SH | U;          /* IPC: EL0 RW */
     l3[2] = task_stack_pa[id] | P | AF | SH | U | UXN;  /* stack: EL0 RW, no exec */
