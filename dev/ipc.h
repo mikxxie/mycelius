@@ -14,6 +14,7 @@ enum mycelius_msg_type {
     MYCELIUS_MSG_ARP_REPLY = 1,   /* net driver -> kernel: ARP reply received */
     MYCELIUS_MSG_BLK_REQUEST = 2, /* driver -> kernel: block I/O request */
     MYCELIUS_MSG_NET_RX = 3,      /* net driver -> kernel: Ethernet frame received */
+    MYCELIUS_MSG_DRV_READY = 4,   /* driver -> kernel: initialized and ready */
     MYCELIUS_MSG_MAX = 255,
 };
 

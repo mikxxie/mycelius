@@ -77,6 +77,12 @@ Project overview, build/run instructions, and repo layout: see INSTRUCTIONS.md.
    `MMU_P` descriptor bits and TTBR0 restore on syscall return); virtio queues,
    DMA descriptor chains, and bounded sector-0 reads are executed by EL0 drivers
    reporting back via IPC.
-5. Replace diagnostic SVC output with validated IPC messages and add fault
-   reporting/restart for non-SVC synchronous exceptions.
+5. ~~Replace diagnostic SVC output with validated IPC messages and add fault
+   reporting/restart for non-SVC synchronous exceptions.~~ - Done: driver
+   service loop checks IPC requests; validated IPC messages (caller identity
+   verification, type bounds checking); non-SVC synchronous exceptions (instruction/
+   data aborts, alignment) report structured fault diagnostics (PC, FAR, ESR), mark
+   the task faulted, and `driver_supervise()` automatically restarts the driver
+   back to `TASK_READY`. Shell commands `crash net` and `crash blk` inject test faults
+   and verify supervisor recovery in QEMU.
 6. GUI (see INSTRUCTIONS.md roadmap).

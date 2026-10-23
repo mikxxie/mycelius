@@ -119,27 +119,32 @@ void mmu_restore_kernel(void) {
 /* user_exception — entered from vectors.S el0_sync stub.
  * x0..x7 are EL0 argument registers; syscall is x8 (loaded by the stub). */
 void user_exception(u64 x0,u64 x1,u64 x2,u64 x3,u64 x4,u64 x5,u64 x6,u64 x7,u64 syscall) {
-    u64 esr;
+    u64 esr, elr, far;
     __asm__ volatile("mrs %0,esr_el1" : "=r"(esr));
-    (void)x4; (void)x5; (void)x6; (void)x7;
+    __asm__ volatile("mrs %0,elr_el1" : "=r"(elr));
+    __asm__ volatile("mrs %0,far_el1" : "=r"(far));
+    (void)x0; (void)x4; (void)x5; (void)x6; (void)x7;
     /* Restore kernel tables before any EL1 data access. */
     mmu_restore_kernel();
     u64 ec = esr >> 26;
 
     if (ec == 0x15 && syscall == 4) {
-        /* SVC #0 with x8=4: driver done — return to kernel_after_user. */
+        /* SVC #0 with x8=4: driver exit — return to kernel_after_user. */
         __asm__ volatile("msr elr_el1,  %0" :: "r"((u64)kernel_after_user));
         __asm__ volatile("msr spsr_el1, %0" :: "r"(0x3c5UL)); /* EL1h, DAIF masked */
         return;
     }
     if (ec == 0x15 && syscall == 5) { /* ipc_send(from,to,type,value) */
-        ipc_send((u32)x0, (u32)x1, (u32)x2, x3);
+        /* Validate sender: must match the active task ID */
+        u32 caller = task_current_id();
+        ipc_send(caller, (u32)x1, (u32)x2, x3);
         mmu_install_task(task_current_pgd());
         return;
     }
     if (ec == 0x15 && syscall == 6) { /* ipc_recv(to,&from,&type,&value) */
+        u32 caller = task_current_id();
         u32 from, type; u64 value;
-        if (ipc_recv((u32)x0, &from, &type, &value) == 0) {
+        if (ipc_recv(caller, &from, &type, &value) == 0) {
             if (x1) *(u32*)x1 = from;
             if (x2) *(u32*)x2 = type;
             if (x3) *(u64*)x3 = value;
@@ -148,28 +153,43 @@ void user_exception(u64 x0,u64 x1,u64 x2,u64 x3,u64 x4,u64 x5,u64 x6,u64 x7,u64 
         return;
     }
 
-    /* Fault or unrecognised syscall: print diagnostics, abort to kernel. */
-    uart_puts("mycelius: EL0 ");
-    if      (ec == 0x20) uart_puts("instruction-abort");
-    else if (ec == 0x24) uart_puts("data-abort");
-    else if (ec == 0x15) uart_puts("unknown-svc");
-    else                 uart_puts("unexpected-exception");
+    /* Non-SVC synchronous exception or invalid syscall: FAULT REPORTING */
+    u32 tid = task_current_id();
+    uart_puts("mycelius: task ");
+    { char num[2] = { '0' + (char)(tid % 10), 0 }; uart_puts(num); }
+    uart_puts(" fault: ");
+    if      (ec == 0x20 || ec == 0x21) uart_puts("instruction-abort");
+    else if (ec == 0x24 || ec == 0x25) uart_puts("data-abort");
+    else if (ec == 0x22)               uart_puts("pc-alignment");
+    else if (ec == 0x26)               uart_puts("sp-alignment");
+    else if (ec == 0x00)               uart_puts("undefined-instruction");
+    else if (ec == 0x15)               uart_puts("unhandled-syscall");
+    else                               uart_puts("unexpected-exception");
+
+    uart_puts(" PC=0x");
+    for (int i = 28; i >= 0; i -= 4) {
+        u32 d = (u32)((elr >> i) & 0xf);
+        char c[2] = { d < 10 ? '0' + d : 'a' + d - 10, 0 };
+        uart_puts(c);
+    }
     uart_puts(" FAR=0x");
-    { u64 far; __asm__ volatile("mrs %0,far_el1":"=r"(far));
-      for (int i = 60; i >= 0; i -= 4) {
-          u32 d = (u32)((far >> i) & 0xf);
-          char c[2] = { d < 10 ? '0' + d : 'a' + d - 10, 0 };
-          uart_puts(c);
-      }
+    for (int i = 28; i >= 0; i -= 4) {
+        u32 d = (u32)((far >> i) & 0xf);
+        char c[2] = { d < 10 ? '0' + d : 'a' + d - 10, 0 };
+        uart_puts(c);
     }
     uart_puts(" ESR=0x");
-    { for (int i = 28; i >= 0; i -= 4) {
-          u32 d = (u32)((esr >> i) & 0xf);
-          char c[2] = { d < 10 ? '0' + d : 'a' + d - 10, 0 };
-          uart_puts(c);
-      }
+    for (int i = 28; i >= 0; i -= 4) {
+        u32 d = (u32)((esr >> i) & 0xf);
+        char c[2] = { d < 10 ? '0' + d : 'a' + d - 10, 0 };
+        uart_puts(c);
     }
     uart_puts("\r\n");
+
+    /* Mark the task faulted for supervision */
+    task_fault(tid);
+
+    /* Abort EL0 execution and safely return to EL1 kernel */
     __asm__ volatile("msr elr_el1,  %0" :: "r"((u64)kernel_after_user));
     __asm__ volatile("msr spsr_el1, %0" :: "r"(0x3c5UL));
 }

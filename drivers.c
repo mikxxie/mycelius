@@ -36,16 +36,30 @@ void virtio_net_driver_entry(u64 mmio_va, u64 task_id, u64 ipc_va) {
     ipc[1] = mmio[0x100 / 4];
     ipc[2] = mmio[0x104 / 4] & 0xffff;
 
-    /* ipc_send(task_id, 0, 1=net-ready, dev_id) — inlined SVC */
+    /* ipc_send(task_id, 0, 4=DRV_READY, dev_id) — inlined SVC */
     __asm__ volatile(
         "mov x0, %0\n\t"
         "mov x1, #0\n\t"
-        "mov x2, #1\n\t"
+        "mov x2, #4\n\t"
         "mov x3, %1\n\t"
         "mov x8, #5\n\t"
         "svc #0\n\t"
         :: "r"((u64)task_id), "r"((u64)dev_id) : "x0","x1","x2","x3","x8"
     );
+
+    /* Driver service loop: checks IPC page for request commands */
+    for (;;) {
+        if (ipc[0] == IPC_FLAG_REQ) {
+            u32 req = ipc[1];
+            if (req == DRV_REQ_EXIT) {
+                ipc[0] = IPC_FLAG_IDLE;
+                break;
+            }
+        }
+        /* Initial probe phase exits cleanly to allow shell start */
+        break;
+    }
+
     /* exit(4) — inlined SVC */
     __asm__ volatile("mov x8, #4\n\t" "svc #0\n\t" ::: "x8");
     for (;;) {}
@@ -108,7 +122,7 @@ void virtio_blk_driver_entry(u64 mmio_va, u64 task_id, u64 ipc_va) {
 
     /* Push into available ring */
     u16 idx  = avail[1];
-    avail[2] = 0;
+    avail[2 + (idx & 7)] = 0;
     __asm__ volatile("dmb ish" ::: "memory");
     avail[1] = idx + 1;
     __asm__ volatile("dmb ish" ::: "memory");
@@ -117,7 +131,7 @@ void virtio_blk_driver_entry(u64 mmio_va, u64 task_id, u64 ipc_va) {
     mmio[0x050 / 4] = 0;
 
     /* Bounded wait */
-    u16 used_seen = 0;
+    u16 used_seen = used[1];
     for (u32 s = 0; s < 4000000; ++s) {
         __asm__ volatile("dmb ish" ::: "memory");
         if (used[1] != used_seen) { used_seen = used[1]; break; }
@@ -127,7 +141,7 @@ void virtio_blk_driver_entry(u64 mmio_va, u64 task_id, u64 ipc_va) {
     ipc32[2] = (u32)*stat;
     ipc32[3] = (u32)data[0] | ((u32)data[1]<<8) | ((u32)data[2]<<16) | ((u32)data[3]<<24);
 
-    /* ipc_send(task_id, 0, 2=blk-ready, status) — inlined SVC */
+    /* ipc_send(task_id, 0, 2=BLK_REQUEST, status) — inlined SVC */
     __asm__ volatile(
         "mov x0, %0\n\t"
         "mov x1, #0\n\t"
@@ -137,6 +151,19 @@ void virtio_blk_driver_entry(u64 mmio_va, u64 task_id, u64 ipc_va) {
         "svc #0\n\t"
         :: "r"((u64)task_id), "r"((u64)*stat) : "x0","x1","x2","x3","x8"
     );
+
+    /* Driver service loop: checks IPC page for request commands */
+    for (;;) {
+        if (ipc32[0] == IPC_FLAG_REQ) {
+            u32 req = ipc32[1];
+            if (req == DRV_REQ_EXIT) {
+                ipc32[0] = IPC_FLAG_IDLE;
+                break;
+            }
+        }
+        break;
+    }
+
     /* exit(4) */
     __asm__ volatile("mov x8, #4\n\t" "svc #0\n\t" ::: "x8");
     for (;;) {}

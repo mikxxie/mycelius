@@ -22,6 +22,14 @@ typedef unsigned long u64;
 #define TASK_DATA_VA   0x00504000UL   /* 512-byte sector / packet data buffer */
 #define TASK_REQ_VA    0x00505000UL   /* blk_header request struct + status byte */
 
+/* IPC message types (aligns with dev/ipc.h) */
+#define MYCELIUS_MSG_NONE        0u
+#define MYCELIUS_MSG_ARP_REPLY   1u   /* net driver -> kernel: ARP reply received */
+#define MYCELIUS_MSG_BLK_REQUEST 2u   /* driver -> kernel: block I/O request / status */
+#define MYCELIUS_MSG_NET_RX      3u   /* net driver -> kernel: Ethernet frame received */
+#define MYCELIUS_MSG_DRV_READY   4u   /* driver -> kernel: driver initialized and ready */
+#define MYCELIUS_MSG_MAX         255u
+
 /* IPC shared page layout (at TASK_IPC_VA physical = task_ipc_pa[id]).
  * The kernel writes a request; the driver reads it, executes, then writes
  * the reply in the same page.  A 'ready' flag tells the driver a request
@@ -93,8 +101,11 @@ void task_fault(u32 id);
 void driver_supervise(void);
 const struct task *task_get(u32 id);
 void task_restart(u32 id);
+u32 task_current_id(void);
+void task_inject_fault(u32 id);
 u32 page_free_count(void);
 void cli_poll(void);
+void cli_reset_prompt(void);
 void mmu_init(void);
 u64 mmu_task_init(u32 id);           /* build per-task EL0 translation tables, returns pgd */
 void mmu_install_task(u64 pgd_pa);   /* load task pgd into TTBR0_EL1 with TLB flush */
@@ -118,12 +129,15 @@ void ext4_pwd(void);
 void ipc_init(void);
 int ipc_send(u32 from, u32 to, u32 type, u64 value);
 int ipc_recv(u32 to, u32 *from, u32 *type, u64 *value);
+int ipc_has_message(u32 to);
 void virtio_net_driver(void);
 void virtio_blk_driver(void);
 void virtio_net_driver_entry(u64 mmio_va, u64 task_id, u64 ipc_va);
 void virtio_blk_driver_entry(u64 mmio_va, u64 task_id, u64 ipc_va);
 void virtio_probe(void);
 void virtio_status(void);
+u64 virtio_device_base(u32 device_type_id);
+u64 virtio_queue_pa(u32 device_type_id);
 int virtio_blk_read0(void);
 int virtio_blk_read(u64 sector, void *buffer);
 int virtio_blk_write(u64 sector, const void *buffer);

@@ -11,6 +11,8 @@ static u8 page_used[RAM_BYTES / PAGE_SIZE / 8]; /* bitmap: 512 bytes covers 16 M
 static u32 el0_boot_phase;
 static u32 current_task;
 
+u32 task_current_id(void) { return current_task; }
+
 u64 task_current_pgd(void) {
     if (current_task < MAX_TASKS && tasks[current_task].state != TASK_EMPTY)
         return tasks[current_task].pgd;
@@ -44,9 +46,28 @@ int task_create(u32 id, u64 base, u64 size) {
     return 0;
 }
 
-void task_fault(u32 id)  { if (id < MAX_TASKS && tasks[id].state != TASK_EMPTY) tasks[id].state = TASK_FAULTED; }
+void task_fault(u32 id)  {
+    if (id < MAX_TASKS && tasks[id].state != TASK_EMPTY)
+        tasks[id].state = TASK_FAULTED;
+}
+
 const struct task *task_get(u32 id) { return id < MAX_TASKS ? &tasks[id] : 0; }
-void task_restart(u32 id) { task_fault(id); driver_supervise(); }
+
+void task_restart(u32 id) {
+    task_fault(id);
+    driver_supervise();
+}
+
+void task_inject_fault(u32 id) {
+    if (id >= MAX_TASKS || tasks[id].state == TASK_EMPTY) return;
+    uart_puts("mycelius: injecting fault into task ");
+    { char num[2] = { '0' + (char)(id % 10), 0 }; uart_puts(num); }
+    uart_puts("...\r\n");
+    /* Point PC to an unmapped address to induce an immediate EL0 instruction abort */
+    tasks[id].pc = 0xdead0000UL;
+    task_launch(id, NET_MMIO_VA, id, TASK_IPC_VA);
+}
+
 u32 page_free_count(void) {
     u32 free = 0;
     for (u32 p = 256; p < RAM_BYTES / PAGE_SIZE; ++p)
@@ -55,11 +76,16 @@ u32 page_free_count(void) {
 }
 
 void driver_supervise(void) {
-    for (u32 i = 0; i < MAX_TASKS; ++i) if (tasks[i].state == TASK_FAULTED) {
-        u64 base = tasks[i].mmio_base, size = tasks[i].mmio_size;
-        tasks[i].state = TASK_EMPTY;
-        (void)task_create(i, base, size);
-        uart_puts("mycelius: restarted driver\r\n");
+    for (u32 i = 0; i < MAX_TASKS; ++i) {
+        if (tasks[i].state == TASK_FAULTED) {
+            tasks[i].sp_el0 = TASK_STACK_VA + PAGE_SIZE - 16;
+            tasks[i].pc = TASK_CODE_VA;
+            tasks[i].spsr = 0x00000000;
+            tasks[i].state = TASK_READY;
+            uart_puts("mycelius: supervisor restarted driver ");
+            { char num[2] = { '0' + (char)(i % 10), 0 }; uart_puts(num); }
+            uart_puts(i == 1 ? " (virtio-net)\r\n" : i == 2 ? " (virtio-blk)\r\n" : "\r\n");
+        }
     }
 }
 
@@ -107,21 +133,35 @@ void kernel_main(void) {
     mmu_init();
     virtio_probe();
 
+    u64 net_base = virtio_device_base(1);
+    if (!net_base) net_base = 0x0a000000UL;
+    u64 blk_base = virtio_device_base(2);
+    if (!blk_base) blk_base = 0x0a000200UL;
+
+    u64 net_mmio_va = NET_MMIO_VA + (net_base & 0xFFFUL);
+
     /* ------------------------------------------------------------------ */
-    /* Task 1: virtio-net driver (MMIO at 0x0a000000, size 0x200)          */
+    /* Task 1: virtio-net driver                                          */
     /* ------------------------------------------------------------------ */
-    (void)task_create(1, 0x0a000000UL, 0x200);
+    (void)task_create(1, net_base, 0x200);
     tasks[1].pgd = mmu_task_init(1);
 
     /* Map driver code at TASK_CODE_VA */
     mmu_map_page((u64 *)tasks[1].pgd, TASK_CODE_VA,
                  (u64)&virtio_net_driver_entry & ~0xFFFUL,
                  MMU_P | MMU_AF | MMU_SH | MMU_U | MMU_PXN);
-    /* Map MMIO at NET_MMIO_VA */
-    mmu_map_page((u64 *)tasks[1].pgd, NET_MMIO_VA, 0x0a000000UL,
+    /* Map MMIO page at NET_MMIO_VA */
+    mmu_map_page((u64 *)tasks[1].pgd, NET_MMIO_VA, net_base & ~0xFFFUL,
                  MMU_P | MMU_AF | MMU_SH | MMU_U | MMU_DEVICE | MMU_PXN | MMU_UXN);
     /* Allocate driver-owned virtio rings: queue0 (rx) and queue1 (tx) */
-    tasks[1].queue0_pa = alloc_queue_pages(1, TASK_QUEUE0_VA);
+    u64 net_q_pa = virtio_queue_pa(1);
+    if (net_q_pa) {
+        tasks[1].queue0_pa = net_q_pa;
+        mmu_map_page((u64 *)tasks[1].pgd, TASK_QUEUE0_VA, net_q_pa, MMU_P | MMU_AF | MMU_SH | MMU_U | MMU_UXN);
+        mmu_map_page((u64 *)tasks[1].pgd, TASK_QUEUE0_VA + 0x1000, net_q_pa + 0x1000, MMU_P | MMU_AF | MMU_SH | MMU_U | MMU_UXN);
+    } else {
+        tasks[1].queue0_pa = alloc_queue_pages(1, TASK_QUEUE0_VA);
+    }
     tasks[1].queue1_pa = alloc_queue_pages(1, TASK_QUEUE1_VA);
     /* Allocate data page (packet buffer) and request page */
     tasks[1].data_pa = (u64)page_alloc();
@@ -136,18 +176,25 @@ void kernel_main(void) {
     tasks[1].spsr   = 0x00000000; /* EL0t */
 
     /* ------------------------------------------------------------------ */
-    /* Task 2: virtio-blk driver (MMIO at 0x0a000200, size 0x200)          */
+    /* Task 2: virtio-blk driver                                          */
     /* ------------------------------------------------------------------ */
-    (void)task_create(2, 0x0a000200UL, 0x200);
+    (void)task_create(2, blk_base, 0x200);
     tasks[2].pgd = mmu_task_init(2);
 
     mmu_map_page((u64 *)tasks[2].pgd, TASK_CODE_VA,
                  (u64)&virtio_blk_driver_entry & ~0xFFFUL,
                  MMU_P | MMU_AF | MMU_SH | MMU_U | MMU_PXN);
-    mmu_map_page((u64 *)tasks[2].pgd, NET_MMIO_VA, 0x0a000200UL,
+    mmu_map_page((u64 *)tasks[2].pgd, NET_MMIO_VA, blk_base & ~0xFFFUL,
                  MMU_P | MMU_AF | MMU_SH | MMU_U | MMU_DEVICE | MMU_PXN | MMU_UXN);
     /* blk uses only queue0 (no tx queue) */
-    tasks[2].queue0_pa = alloc_queue_pages(2, TASK_QUEUE0_VA);
+    u64 blk_q_pa = virtio_queue_pa(2);
+    if (blk_q_pa) {
+        tasks[2].queue0_pa = blk_q_pa;
+        mmu_map_page((u64 *)tasks[2].pgd, TASK_QUEUE0_VA, blk_q_pa, MMU_P | MMU_AF | MMU_SH | MMU_U | MMU_UXN);
+        mmu_map_page((u64 *)tasks[2].pgd, TASK_QUEUE0_VA + 0x1000, blk_q_pa + 0x1000, MMU_P | MMU_AF | MMU_SH | MMU_U | MMU_UXN);
+    } else {
+        tasks[2].queue0_pa = alloc_queue_pages(2, TASK_QUEUE0_VA);
+    }
     tasks[2].data_pa   = (u64)page_alloc();
     mmu_map_page((u64 *)tasks[2].pgd, TASK_DATA_VA, tasks[2].data_pa,
                  MMU_P | MMU_AF | MMU_SH | MMU_U | MMU_UXN);
@@ -185,18 +232,41 @@ void kernel_main(void) {
 
     /* Launch net driver: reads device ID, initialises rings, exits via SVC. */
     uart_puts("mycelius: launching net driver at EL0\r\n");
-    task_launch(1, NET_MMIO_VA, 1, TASK_IPC_VA);
+    task_launch(1, net_mmio_va, 1, TASK_IPC_VA);
     for (;;) {}
 }
 
 void kernel_after_user(void) {
-    if (el0_boot_phase++ == 0) {
-        uart_puts("mycelius: net driver returned\r\n");
+    if (el0_boot_phase == 0) {
+        el0_boot_phase = 1;
+        u32 from = 0, type = 0; u64 val = 0;
+        if (ipc_recv(0, &from, &type, &val) == 0 && from == 1 && type == MYCELIUS_MSG_DRV_READY) {
+            uart_puts("mycelius: validated IPC from net driver (type=READY dev=0x");
+            { char num[2] = { '0' + (char)(val % 10), 0 }; uart_puts(num); }
+            uart_puts(")\r\n");
+        } else {
+            uart_puts("mycelius: net driver returned\r\n");
+        }
         uart_puts("mycelius: launching blk driver at EL0\r\n");
-        task_launch(2, NET_MMIO_VA, 2, TASK_IPC_VA);
-    } else {
-        uart_puts("mycelius: blk driver returned\r\n");
+        u64 blk_base = virtio_device_base(2);
+        u64 blk_mmio_va = NET_MMIO_VA + (blk_base & 0xFFFUL);
+        task_launch(2, blk_mmio_va, 2, TASK_IPC_VA);
+    } else if (el0_boot_phase == 1) {
+        el0_boot_phase = 2;
+        u32 from = 0, type = 0; u64 val = 0;
+        if (ipc_recv(0, &from, &type, &val) == 0 && from == 2 && type == MYCELIUS_MSG_BLK_REQUEST) {
+            uart_puts("mycelius: validated IPC from blk driver (type=BLK_REQ stat=0x");
+            { char num[2] = { '0' + (char)(val % 10), 0 }; uart_puts(num); }
+            uart_puts(")\r\n");
+        } else {
+            uart_puts("mycelius: blk driver returned\r\n");
+        }
         uart_puts("mycelius> type 'help'\r\nmycelius> ");
+        for (;;) { driver_supervise(); net_poll(); cli_poll(); }
+    } else {
+        /* Post-boot fault recovery: supervisor restart and polling */
+        driver_supervise();
+        cli_reset_prompt();
         for (;;) { driver_supervise(); net_poll(); cli_poll(); }
     }
 }

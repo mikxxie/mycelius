@@ -99,6 +99,8 @@ static void help_disp(void) {
         "ext4 ls        - List ext4 root directory\r\n"
         "restart net    - Restart virtio-net driver\r\n"
         "restart blk    - Restart virtio-blk driver\r\n"
+        "crash net      - Inject fault into net driver to test supervisor\r\n"
+        "crash blk      - Inject fault into blk driver to test supervisor\r\n"
         "mnu            - Show Mycelius New Utility menu\r\n");
 }
 
@@ -178,6 +180,8 @@ static void execute(void) {
     else if (same(line, "ext4 ls")) { if (ext4_ls_root()) uart_puts("ext4: unsupported or unreadable root\r\n"); }
     else if (same(line, "restart net")) task_restart(1);
     else if (same(line, "restart blk")) task_restart(2);
+    else if (same(line, "crash net")) task_inject_fault(1);
+    else if (same(line, "crash blk")) task_inject_fault(2);
     else if (line[0] == 'm' && line[1] == 'n' && line[2] == 'u' && (line[3] == 0 || line[3] == ' ')) {
         mnu_prompt = 1;
         mnu_unsaved = 0;
@@ -207,6 +211,12 @@ static void execute(void) {
         /* The actual Ctrl+S/Ctrl+X handling is in cli_poll() */
     }
     else if (line[0]) uart_puts("unknown command\r\n");
+}
+
+void cli_reset_prompt(void) {
+    used = 0;
+    line[0] = 0;
+    uart_puts("mycelius> ");
 }
 
 /* Console poll */

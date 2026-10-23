@@ -85,7 +85,10 @@ struct task {
 - Per-task `TTBR0_EL1` roots run both net and block driver probes at EL0 with distinct page tables
 - Driver-owned virtio queue rings, request headers, and data buffers mapped into EL0 address spaces
 - Virtio-blk driver at EL0 performs sector 0 read using physical addresses in DMA descriptors
-- Drivers communicate completion via IPC (`ipc_send`) and exit cleanly via SVC #4
+- Drivers communicate completion via validated IPC (`ipc_send`) and handle service loop requests
+- Synchronous non-SVC exceptions (instruction abort, data abort, alignment faults) log structured fault diagnostics (PC, FAR, ESR)
+- Kernel supervisor (`driver_supervise()`) detects faulted driver tasks and automatically resets their execution context back to `TASK_READY`
+- Shell commands `crash net` and `crash blk` test fault injection and supervisor recovery
 - `net ping 10.0.2.2` works
 - ext4 mounts read-write and passes host `e2fsck -fn` cleanly
 - `make run`, `make run-disk`, `make run-gui` work
@@ -93,13 +96,11 @@ struct task {
 
 ## Current EL0 Bring-Up Status
 
-Net and block EL0 drivers are verified in QEMU running under their own distinct `TTBR0_EL1` roots. The root cause of the previous `TASK_CODE_VA` fault (a misdefined `MMU_P` constant causing Level-3 descriptor invalidation, and exception returns failing to re-install task `TTBR0_EL1` on non-exit syscalls) is resolved. The drivers own their queue descriptors and buffers and report status back to the kernel via IPC.
+Net and block EL0 drivers are verified in QEMU running under their own distinct `TTBR0_EL1` roots. The drivers own their queue descriptors and buffers and report status back to the kernel via validated IPC. Synchronous exception fault handling and automatic supervisor restart have been verified.
 
 ## Next Steps
 
-1. Replace diagnostic SVC output with validated IPC messages and add fault
-   reporting/restart for non-SVC synchronous exceptions.
-2. Then GUI (virtio-gpu framebuffer).
+1. GUI (virtio-gpu framebuffer + display/input for `make run-gui`).
 
 ---
 

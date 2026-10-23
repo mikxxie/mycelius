@@ -58,6 +58,18 @@ void virtio_status(void) {
         uart_puts(")\r\n");
     }
 }
+
+u64 virtio_device_base(u32 device_type_id) {
+    for (u32 i = 0; i < count; ++i)
+        if (devices[i].id == device_type_id) return devices[i].base;
+    return 0;
+}
+
+u64 virtio_queue_pa(u32 device_type_id) {
+    for (u32 i = 0; i < count; ++i)
+        if (devices[i].id == device_type_id) return (u64)&legacy_queue[i][0];
+    return 0;
+}
 static u16 blk_used_seen = 0;
 
 int virtio_blk_read(u64 sector, void *buffer) {
@@ -73,11 +85,12 @@ int virtio_blk_read(u64 sector, void *buffer) {
     d[2] = (struct desc){ (u64)&request_status, 1, 2, 0 };
     u16 index = avail[1]; avail[2 + (index & 7)] = 0; barrier(); avail[1] = index + 1;
     barrier();
+    u16 target = used[1] + 1;
     R(devices[slot].base, 0x050) = 0; /* QueueNotify */
     for (u32 spins = 0; spins < 2000000; ++spins) {
         barrier();
-        if (used[1] != blk_used_seen) {
-            blk_used_seen = used[1];
+        if (used[1] == target) {
+            blk_used_seen = target;
             return request_status == 0 ? 0 : -1;
         }
     }
@@ -97,11 +110,12 @@ int virtio_blk_write(u64 sector, const void *buffer) {
     d[2] = (struct desc){ (u64)&request_status, 1, 2, 0 };
     u16 index = avail[1]; avail[2 + (index & 7)] = 0; barrier(); avail[1] = index + 1;
     barrier();
+    u16 target = used[1] + 1;
     R(devices[slot].base, 0x050) = 0;
     for (u32 spins = 0; spins < 2000000; ++spins) {
         barrier();
-        if (used[1] != blk_used_seen) {
-            blk_used_seen = used[1];
+        if (used[1] == target) {
+            blk_used_seen = target;
             return request_status == 0 ? 0 : -1;
         }
     }
@@ -120,11 +134,12 @@ int virtio_blk_flush(void) {
     d[1] = (struct desc){ (u64)&request_status, 1, 2, 0 };
     u16 index = avail[1]; avail[2 + (index & 7)] = 0; barrier(); avail[1] = index + 1;
     barrier();
+    u16 target = used[1] + 1;
     R(devices[slot].base, 0x050) = 0;
     for (u32 spins = 0; spins < 2000000; ++spins) {
         barrier();
-        if (used[1] != blk_used_seen) {
-            blk_used_seen = used[1];
+        if (used[1] == target) {
+            blk_used_seen = target;
             return request_status == 0 ? 0 : -1;
         }
     }
