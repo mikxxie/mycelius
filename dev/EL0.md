@@ -2,7 +2,7 @@
 
 ## Overview
 
-EL0 is the **least privileged execution level** in AArch64 (ARM64). In Mycelius, EL0 is intended to host **isolated driver processes**. Each driver runs at EL0 with its own translation tables, mapped only to:
+EL0 is the **least privileged execution level** in AArch64 (ARM64). In Mycelius, EL0 hosts isolated driver probes. The active probe's EL0 window maps only:
 - Its own code page
 - Its own IPC page
 - Its assigned MMIO page, mapped at `NET_MMIO_VA` (`0x00403000`)
@@ -15,7 +15,7 @@ This is the core isolation mechanism: a buggy or malicious driver cannot access 
 
 ### Translation Tables (mmu.c)
 
-Each EL0 task has its own 4-level translation table:
+The experimental per-task roots use a 4-level translation table:
 
 ```
 L0 (pgd) -> L1 -> L2 -> L3 (actual pages)
@@ -24,15 +24,22 @@ L0 (pgd) -> L1 -> L2 -> L3 (actual pages)
 For a 4KB page at VA `0x400000`:
 - `L0[0]` -> L1 page table
 - `L1[0]` -> L2 page table  
-- `L2[1]` (index for 0x400000) -> L3 page table
+- `L2[2]` (index for 0x400000) -> L3 page table
 - `L3[0]` = physical page frame + attributes
 
-### Queue Table (mmu_task_init)
+### Task Table (mmu_task_init)
 
 `mmu_task_init(u32 id)` builds per-task page tables:
 - Maps driver code at `0x400000` (TASK_CODE_VA)
 - Maps IPC page at `0x00404000` (`TASK_IPC_VA`)
 - Maps the assigned MMIO page at `0x00403000` (`NET_MMIO_VA`)
+
+Direct use of these distinct roots still faults at `TASK_CODE_VA`. The verified
+bring-up path instead uses `mmu_task_activate()` immediately before each
+sequential probe to replace the established root's four EL0 PTEs (code, stack,
+IPC and MMIO). Kernel RAM, UART and every other device mapping remain EL1-only.
+This isolates the active driver but is not yet a simultaneously runnable
+per-task address-space design.
 
 ### Task Context (struct task in kernel.h)
 
@@ -53,7 +60,7 @@ struct task {
 
 1. `task_launch(id, x0, x1, x2)` calls `task_switch(id)` then `eret`
 2. `task_switch` loads:
-   - `TTBR0_EL1` = task's page table
+   - `TTBR0_EL1` = established root with the active task's four-page EL0 window
    - `SP_EL0` = task's stack pointer
    - `ELR_EL1` = task's PC (entry point)
    - `SPSR_EL1` = 0x00000000 (EL0t, SP_EL0, no mask)
@@ -82,22 +89,19 @@ struct task {
 
 ## Current EL0 Bring-Up Status
 
-The task-table setup and small net/block EL0 probe payloads exist, but their
-automatic launch is deliberately disabled. QEMU reports a level-3 instruction
-translation fault at `TASK_CODE_VA` (`0x00400000`) on the initial `eret`, even
-though the kernel-side page-table walk sees the code PTE. Treat the isolation
-work as **bring-up, not verified**.
+Net and block EL0 probes are verified in QEMU. Boot initializes the
+kernel-owned transports and mounts ext4 first, then runs the net probe at EL0,
+its SVC #4 return path, the block probe, and finally the shell. This order
+prevents a probe from selecting the non-persistent RAM VFS.
 
-Boot therefore keeps the working net/block transports in EL1, mounts ext4,
-and then starts the shell. This prevents a failed EL0 probe from entering a
-shell before `ext4_mount()` and accidentally using the non-persistent RAM VFS.
+Production queue state and network/block transport remain kernel-owned; direct
+loading of each distinct task root is still an unresolved next step.
 
 ## Next Steps
 
-1. Resolve the `TASK_CODE_VA` level-3 translation fault, then verify a net
-   probe and a block probe independently in QEMU.
-2. Resume only through a verified EL1 continuation after SVC #4.
-3. Move queue ownership and bounded request processing into the EL0 drivers.
+1. Resolve the distinct task-root `TASK_CODE_VA` translation fault and run the
+   probes with their own `TTBR0_EL1` roots.
+2. Move queue ownership and bounded request processing into the EL0 drivers.
 4. Replace diagnostic SVC output with validated IPC messages and add fault
    reporting/restart for non-SVC synchronous exceptions.
 5. Then GUI (virtio-gpu framebuffer).

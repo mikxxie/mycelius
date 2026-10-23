@@ -5,8 +5,10 @@
 #define UART_FR (*(volatile u32 *)0x09000018UL)
 #define UART_TXFF (1u << 5)
 #define UART_RXFE (1u << 4)
+extern u64 l0[512];
 static struct task tasks[MAX_TASKS];
 static u8 page_used[RAM_BYTES / PAGE_SIZE / 8]; /* 512 bytes for all 16 MiB */
+static u32 el0_boot_phase;
 
 void uart_puts(const char *s) { while (*s) { while (UART_FR & UART_TXFF) {} UART_DR = (u32)*s++; } }
 int uart_getc_nonblock(void) { return (UART_FR & UART_RXFE) ? -1 : (int)(UART_DR & 0xff); }
@@ -52,7 +54,10 @@ void mmu_map_page(u64 *pgd, u64 va, u64 pa, u64 attr);
 /* Switch to task's EL0 translation table and context. */
 void task_switch(u32 id) {
     if (id >= MAX_TASKS || tasks[id].state == TASK_EMPTY) return;
-    __asm__ volatile("msr ttbr0_el1, %0" :: "r"(tasks[id].pgd));
+    /* mmu_task_activate() selects the task's four-page EL0 window under the
+     * established root.  The experimental per-task root is retained for the
+     * next step, but is not used until its level-3 walk is fixed. */
+    __asm__ volatile("msr ttbr0_el1, %0" :: "r"((u64)l0));
     /* Publish the new task tables before invalidating translations.  Without
      * this DSB, QEMU can retain the kernel's old mapping of TASK_CODE_VA and
      * EL0 takes a level-3 instruction translation fault. */
@@ -111,28 +116,26 @@ void kernel_main(void) {
     tasks[2].pc = TASK_CODE_VA;
     tasks[2].spsr = 0x00000000;
 
-    /* Do not launch these probes yet.  QEMU reports a level-3 instruction
-     * translation fault at TASK_CODE_VA, so launching them would bypass the
-     * kernel's net/ext4 initialization and silently select the RAM VFS. */
-    uart_puts("mycelius: EL0 probe launch deferred (task code mapping fault)\r\n");
     net_init();
     net_set_up(1);
     if (ext4_mount() == 0) {
         vfs_use_ext4();
         uart_puts("mycelius: ext4 mounted read-write\r\n");
     }
-    uart_puts("mycelius> type 'help'\r\nmycelius> ");
-    for (;;) { driver_supervise(); net_poll(); cli_poll(); }
+    uart_puts("mycelius: launching net probe at EL0\r\n");
+    mmu_task_activate(1, (u64)&virtio_net_driver_entry & ~0xfffUL, 0x0a000000UL);
+    task_launch(1, NET_MMIO_VA, 1, TASK_IPC_VA);
+    for (;;) {}
 }
 
 void kernel_after_user(void) {
-    /* Reserved for a verified EL0 exit path. */
-    net_init();
-    net_set_up(1);
-    if (ext4_mount() == 0) {
-        vfs_use_ext4();
-        uart_puts("mycelius: ext4 mounted read-write\r\n");
+    if (el0_boot_phase++ == 0) {
+        uart_puts("mycelius: net probe returned\r\n");
+        uart_puts("mycelius: launching blk probe at EL0\r\n");
+        mmu_task_activate(2, (u64)&virtio_blk_driver_entry & ~0xfffUL, 0x0a000200UL);
+        task_launch(2, NET_MMIO_VA, 2, TASK_IPC_VA);
     }
+    uart_puts("mycelius: blk probe returned\r\n");
     uart_puts("mycelius> type 'help'\r\nmycelius> ");
     for (;;) { driver_supervise(); net_poll(); cli_poll(); }
 }

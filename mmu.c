@@ -51,6 +51,18 @@ u64 mmu_task_init(u32 id) {
     l3[4] = task_ipc_pa[id] | P | AF | SH | U | UXN;    /* 0x00404000: EL0 RW */
     return (u64)pgd;
 }
+
+/* The initial EL0 probes run one at a time.  Reuse the proven kernel root
+ * while replacing its low EL0 window with exactly this task's four pages.
+ * Kernel RAM and all high device mappings remain EL1-only. */
+void mmu_task_activate(u32 id, u64 code_pa, u64 mmio_pa) {
+    if (id >= MAX_TASKS) return;
+    l3u[0] = code_pa | P | AF | SH | U | PXN;
+    l3u[2] = task_stack_pa[id] | P | AF | SH | U | PXN | UXN;
+    l3u[3] = mmio_pa | P | AF | SH | U | (1UL << 2) | PXN | UXN;
+    l3u[4] = task_ipc_pa[id] | P | AF | SH | U | PXN | UXN;
+    __asm__ volatile("dsb ishst; tlbi vmalle1is; dsb ish; isb" ::: "memory");
+}
 /* Map a 4KB page at VA into the given page table. Walks L0->L1->L2->L3. */
 void mmu_map_page(u64 *pgd, u64 va, u64 pa, u64 attr) {
     u64 *l1 = (u64 *)(pgd[0] & ~0xFFF);

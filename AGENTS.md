@@ -66,14 +66,16 @@ Project overview, build/run instructions, and repo layout: see INSTRUCTIONS.md.
 1. ~~Proceed with the virtio-net queue, Ethernet framing, ARP, IPv4 and ICMP.~~
    Done — see the virtio-net stack notes above.
 2. Build per-task EL0 translation tables and transition the drivers into isolated
-   EL0 user processes — **bring-up not verified**. The task code page currently
-   faults at EL0 entry (`TASK_CODE_VA`, level-3 instruction translation fault in
-   QEMU), so automatic EL0 probe launch is disabled and virtio transport remains
-   in the kernel.
+   EL0 user processes — EL0 net/block probes are verified in QEMU. Before each
+   sequential probe `mmu_task_activate()` installs only its code, stack, IPC and
+   MMIO pages into the proven EL0 window; kernel RAM/UART/other devices remain
+   EL1-only. Distinct task roots still fault at `TASK_CODE_VA`, so this is not
+   yet simultaneously runnable isolation and virtio queue ownership remains in
+   the kernel.
 3. ~~Development headers / syscall surface~~ - Done — see dev/ directory.
    C/C++ headers: dev/ipc.h, dev/net.h, dev/drv.h, dev/fs.h, dev/syscall.h,
    plus C++ wrappers (*.hpp) and umbrella header dev/mycelius.h.
    dev/jit.h added for JIT compilation support.
-4. Resolve the EL0 code-page translation fault, independently verify net and
-   block probes, then move queue ownership out of the kernel.
+4. Resolve the distinct task-root code-page translation fault, then move queue
+   ownership out of the kernel.
 5. GUI (see INSTRUCTIONS.md roadmap).

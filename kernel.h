@@ -49,6 +49,7 @@ u32 page_free_count(void);
 void cli_poll(void);
 void mmu_init(void);
 u64 mmu_task_init(u32 id);           /* build per-task EL0 translation tables, returns pgd */
+void mmu_task_activate(u32 id, u64 code_pa, u64 mmio_pa);
 void task_switch(u32 id);            /* switch TTBR0_EL1 + SP_EL0 to task */
 void task_launch(u32 id, u64 a0, u64 a1, u64 a2); /* enter task at EL0 with args */
 void mmu_map_page(u64 *pgd, u64 va, u64 pa, u64 attr); /* map a page into a task table */
