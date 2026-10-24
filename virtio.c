@@ -313,7 +313,7 @@ struct gpu_resource_attach_backing {
 /* Command and response pages for virtio-gpu control structures */
 static u8 gpu_cmd_buf[4096] __attribute__((aligned(4096)));
 static u8 gpu_resp_buf[4096] __attribute__((aligned(4096)));
-static u64 gpu_next_fence = 1;
+static u32 gpu_notify_off = 0x050; /* legacy default */
 
 /* Send a single virtio-gpu command.  desc[0] = request (device reads),
  * desc[1] = response (device writes).  Returns the response type. */
@@ -326,7 +326,7 @@ static u32 gpu_exec(u64 base, u8 *q) {
     barrier();
     avail[1] = index + 1;
     barrier();
-    R(base, 0x050) = 0; /* QueueNotify for queue 0 */
+    R(base, gpu_notify_off) = 0; /* QueueNotify */
 
     u16 target = used[1] + 1;
     for (u32 spins = 0; spins < 2000000; ++spins) {
@@ -342,8 +342,8 @@ static u32 gpu_exec(u64 base, u8 *q) {
 /* Fill a virtio-gpu control header with fence flag + incrementing fence ID. */
 static void gpu_hdr_init(struct gpu_ctrl_hdr *ch, u32 type) {
     ch->type = type;
-    ch->flags = 1; /* VIRTIO_GPU_FLAG_FENCE */
-    ch->fence_id = gpu_next_fence++;
+    ch->flags = 0; /* No fence for legacy MMIO */
+    ch->fence_id = 0;
     ch->ctx_id = 0;
     ch->padding = 0;
 }
@@ -360,11 +360,15 @@ int virtio_gpu_display(void) {
     u64 base = devices[slot].base;
     u8 *q = legacy_queue[slot];
 
-    /* --- Virtio device setup (legacy/MMIO, QEMU virt) --- */
-    /* virtio_probe() already set: status=ACK|DRIVER|DRIVER_OK, queue rings.
-     * Just add FEATURES_OK and GuestPageSize. */
-    R(base, 0x070) = 0x0F;           /* Status: ACK|DRIVER|DRIVER_OK|FEATURES_OK */
+    /* --- Virtio device setup --- */
+    /* QEMU virt exposes virtio-gpu as legacy MMIO (version 1), same as net/blk.
+     * virtio_probe() already set up status=ACK|DRIVER|DRIVER_OK and queue 0.
+     * Just set FEATURES_OK and GuestPageSize, then use the existing queue. */
+    (void)R(base, 0x10);             /* Read device features */
+    R(base, 0x14) = 0;               /* Driver features = 0 */
     R(base, 0x018) = 4096;           /* GuestPageSize */
+    R(base, 0x070) = 0x0F;           /* Status: ACK|DRIVER|DRIVER_OK|FEATURES_OK */
+    gpu_notify_off = 0x050;          /* Legacy QueueNotify (same as net/blk) */
 
     u32 fb_pa = gui_fb_addr();
     if (!fb_pa) {
