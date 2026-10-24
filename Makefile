@@ -35,7 +35,7 @@ run: mycelius.bin disk
 	$(QEMU) $(QEMU_COMMON) -nographic -drive if=none,file=mycelius.img,format=raw,id=blk0 -device virtio-blk-device,drive=blk0
 
 run-gui: mycelius.bin disk
-	$(QEMU) $(QEMU_COMMON) -display $(QEMU_DISPLAY) -serial mon:stdio -drive if=none,file=mycelius.img,format=raw,id=blk0 -device virtio-blk-device,drive=blk0
+	$(QEMU) $(QEMU_COMMON) -display $(QEMU_DISPLAY) -serial mon:stdio -drive if=none,file=mycelius.img,format=raw,id=blk0 -device virtio-blk-device,drive=blk0 -device virtio-gpu-device
 
 disk:
 	@test -e mycelius.img || qemu-img create -f raw mycelius.img 8M

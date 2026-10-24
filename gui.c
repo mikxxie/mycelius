@@ -9,18 +9,21 @@
 #define FB_BPP    4   /* 32-bit RGBA */
 #define FB_SIZE   (FB_WIDTH * FB_HEIGHT * FB_BPP)
 
-static u32 *fb = 0;
+static u32 fb_buf[FB_WIDTH * FB_HEIGHT] __attribute__((aligned(4096)));
+static u32 *fb = fb_buf;
 static u32  fb_pa = 0;
 
-#define COLOR_BLACK  0x000000FF
+/* RGBA8888 in little-endian memory: byte0=R, byte1=G, byte2=B, byte3=A.
+ * u32 value stored as AABBGGRR → memory order R,G,B,A. */
+#define COLOR_BLACK  0xFF000000
 #define COLOR_WHITE  0xFFFFFFFF
-#define COLOR_BLUE   0x0000FFFF
-#define COLOR_GREEN  0x00FF00FF
+#define COLOR_BLUE   0xFFFF0000
+#define COLOR_GREEN  0xFF00FF00
 #define COLOR_RED    0xFF0000FF
-#define COLOR_YELLOW 0xFFFF00FF
+#define COLOR_YELLOW 0xFF00FFFF
 
 static void fb_pixel(u32 x, u32 y, u32 color) {
-    if (x >= FB_WIDTH || y >= FB_HEIGHT || !fb) return;
+    if (x >= FB_WIDTH || y >= FB_HEIGHT) return;
     fb[y * FB_WIDTH + x] = color;
 }
 
@@ -31,24 +34,9 @@ static void fb_rect(u32 x, u32 y, u32 w, u32 h, u32 color) {
 }
 
 static void fb_char(u32 x, u32 y, char c, u32 fg, u32 bg) {
-    /* 5x7 bitmap font.  Bit set = foreground. */
     static const u8 font[95][7] = {
         {0x00,0x00,0x00,0x00,0x00,0x00,0x00}, /* space */
         {0x00,0x00,0x2F,0x00,0x00,0x00,0x00}, /* ! */
-        {0x00,0x00,0x00,0x00,0x00,0x00,0x00}, /* " */
-        {0x00,0x00,0x00,0x00,0x00,0x00,0x00}, /* # */
-        {0x00,0x00,0x00,0x00,0x00,0x00,0x00}, /* $ */
-        {0x00,0x00,0x00,0x00,0x00,0x00,0x00}, /* % */
-        {0x00,0x00,0x00,0x00,0x00,0x00,0x00}, /* & */
-        {0x00,0x00,0x00,0x00,0x00,0x00,0x00}, /* ' */
-        {0x00,0x00,0x00,0x00,0x00,0x00,0x00}, /* ( */
-        {0x00,0x00,0x00,0x00,0x00,0x00,0x00}, /* ) */
-        {0x00,0x00,0x00,0x00,0x00,0x00,0x00}, /* * */
-        {0x00,0x00,0x00,0x00,0x00,0x00,0x00}, /* + */
-        {0x00,0x00,0x00,0x00,0x00,0x00,0x00}, /* , */
-        {0x00,0x00,0x00,0x00,0x00,0x00,0x00}, /* - */
-        {0x00,0x00,0x00,0x00,0x00,0x00,0x00}, /* . */
-        {0x00,0x00,0x00,0x00,0x00,0x00,0x00}, /* / */
         {0x3E,0x63,0x73,0x73,0x73,0x67,0x3E}, /* 0 */
         {0x0C,0x1C,0x1C,0x0C,0x0C,0x0C,0x3E}, /* 1 */
         {0x3E,0x63,0x03,0x0E,0x1C,0x30,0x3E}, /* 2 */
@@ -60,9 +48,8 @@ static void fb_char(u32 x, u32 y, char c, u32 fg, u32 bg) {
         {0x3E,0x63,0x3E,0x33,0x03,0x63,0x3E}, /* 8 */
         {0x3E,0x63,0x3E,0x03,0x03,0x63,0x3E}, /* 9 */
     };
-    if (!fb || c < 32 || c > 126) return;
+    if (c < 32 || c > 126) return;
     u8 glyph[7];
-    for (int i = 0; i < 7; ++i) glyph[i] = 0;
     for (int i = 0; i < 7; ++i) glyph[i] = font[c - 32][i];
     for (u32 row = 0; row < 7; ++row) {
         u8 bits = glyph[row];
@@ -85,22 +72,17 @@ static void fb_text(u32 x, u32 y, const char *s, u32 fg, u32 bg) {
 }
 
 void gui_init(void) {
-    if (fb) return;
-    u8 *page = (u8 *)page_alloc();
-    if (!page) return;
-    fb = (u32 *)page;
-    fb_pa = (u64)page;
+    if (fb_pa) return;
+    fb_pa = (u64)fb;
     for (u32 i = 0; i < FB_WIDTH * FB_HEIGHT; ++i) fb[i] = COLOR_BLACK;
 }
 
-u32 gui_fb_addr(void) { return fb_pa; }
+u32 gui_fb_addr(void) { return (u32)fb_pa; }
 u32 gui_fb_width(void) { return FB_WIDTH; }
 u32 gui_fb_height(void) { return FB_HEIGHT; }
 
 void gui_demo(void) {
-    if (!fb) gui_init();
-    if (!fb) { uart_puts("gui: no framebuffer memory\r\n"); return; }
-
+    gui_init();
     /* Background */
     fb_rect(0, 0, FB_WIDTH, FB_HEIGHT, COLOR_BLUE);
     /* Border */
@@ -116,7 +98,6 @@ void gui_demo(void) {
     fb_rect(200, 80, 60, 40, COLOR_YELLOW);
     /* Stats text */
     fb_text(20, 160, "FB addr: 0x", COLOR_WHITE, COLOR_BLUE);
-    /* Print address hex */
     char hex[9];
     u32 v = fb_pa;
     for (int i = 7; i >= 0; --i) {

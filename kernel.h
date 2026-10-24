@@ -164,3 +164,6 @@ void kernel_after_user(void);
 void gui_init(void);
 void gui_demo(void);
 u32 gui_fb_addr(void);
+u32 gui_fb_width(void);
+u32 gui_fb_height(void);
+int virtio_gpu_display(void);
