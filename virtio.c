@@ -45,6 +45,10 @@ void virtio_probe(void) {
             }
             R(base, 0x070) |= 4;
         } else if (version != 2) continue;
+        /* modern v2: just record, queue setup deferred to driver */
+        R(base, 0x070) = 0;                  /* Reset */
+        R(base, 0x070) = 1 | 2;              /* ACK | DRIVER */
+        R(base, 0x028) = 4096;               /* GuestPageSize */
         devices[count++] = (struct device){ base, id };
     }
 }
@@ -266,6 +270,8 @@ struct gpu_resp_hdr {
     u32 type;
     u32 flags;
     u64 fence_id;
+    u32 ctx_id;
+    u32 padding;
 };
 
 struct gpu_display_info {
@@ -339,11 +345,14 @@ static u32 gpu_exec(u64 base, u8 *q) {
     return 0xFFFFFFFF; /* timeout */
 }
 
-/* Fill a virtio-gpu control header with fence flag + incrementing fence ID. */
+static u64 gpu_fence_next = 1;
+
+/* Fill a virtio-gpu control header with fence flag + incrementing fence ID.
+ * Host is little-endian; device expects little-endian. Raw writes are correct. */
 static void gpu_hdr_init(struct gpu_ctrl_hdr *ch, u32 type) {
     ch->type = type;
-    ch->flags = 0; /* No fence for legacy MMIO */
-    ch->fence_id = 0;
+    ch->flags = GPU_FLAG_FENCE;
+    ch->fence_id = gpu_fence_next++;
     ch->ctx_id = 0;
     ch->padding = 0;
 }
@@ -361,14 +370,18 @@ int virtio_gpu_display(void) {
     u8 *q = legacy_queue[slot];
 
     /* --- Virtio device setup --- */
-    /* QEMU virt exposes virtio-gpu as legacy MMIO (version 1), same as net/blk.
-     * virtio_probe() already set up status=ACK|DRIVER|DRIVER_OK and queue 0.
-     * Just set FEATURES_OK and GuestPageSize, then use the existing queue. */
-    (void)R(base, 0x10);             /* Read device features */
-    R(base, 0x14) = 0;               /* Driver features = 0 */
-    R(base, 0x018) = 4096;           /* GuestPageSize */
-    R(base, 0x070) = 0x0F;           /* Status: ACK|DRIVER|DRIVER_OK|FEATURES_OK */
-    gpu_notify_off = 0x050;          /* Legacy QueueNotify (same as net/blk) */
+    /* QEMU virt exposes virtio-gpu as legacy v1. Full setup sequence: */
+    R(base, 0x070) = 0;                  /* Reset */
+    R(base, 0x070) = 1 | 2;              /* ACK | DRIVER */
+    R(base, 0x028) = 4096;               /* GuestPageSize */
+    R(base, 0x030) = 0;                  /* QueueSel = 0 */
+    u32 max = R(base, 0x034);            /* QueueNumMax */
+    if (!max) max = 8;
+    R(base, 0x038) = max < 8 ? max : 8;  /* QueueNum */
+    R(base, 0x03c) = 4096;               /* QueueAlign */
+    R(base, 0x040) = (u32)((u64)&legacy_queue[slot][0] >> 12); /* QueueDesc (pfn) */
+    R(base, 0x070) |= 4 | 8;             /* Status: DRIVER_OK | FEATURES_OK */
+    gpu_notify_off = 0x050;          /* QueueNotify */
 
     u32 fb_pa = gui_fb_addr();
     if (!fb_pa) {
@@ -384,15 +397,26 @@ int virtio_gpu_display(void) {
     /* --- 1. GET_DISPLAY_INFO --- */
     {
         struct gpu_ctrl_hdr *ch = (struct gpu_ctrl_hdr *)gpu_cmd_buf;
-        gpu_hdr_init(ch, GPU_CMD_GET_DISPLAY_INFO);
+        ch->type = GPU_CMD_GET_DISPLAY_INFO;
+        ch->flags = 0;
+        ch->fence_id = 1;
+        ch->ctx_id = 0;
+        ch->padding = 0;
 
         d[0] = (struct desc){ (u64)gpu_cmd_buf, sizeof(struct gpu_ctrl_hdr), 1, 1 };
-        d[1] = (struct desc){ (u64)gpu_resp_buf, sizeof(struct gpu_display_info), 2, 0 };
+        d[1] = (struct desc){ (u64)gpu_resp_buf, sizeof(struct gpu_resp_hdr), 2, 0 };
 
         u32 resp = gpu_exec(base, q);
         if (resp != GPU_RESP_OK_DISPLAYINFO) {
             uart_puts("virtio-gpu: GET_DISPLAY_INFO failed, resp=");
             { char hex[9]; u32 v = resp; for (int i = 7; i >= 0; --i) { u32 dd = (v >> (i*4)) & 0xF; hex[7-i] = (char)(dd < 10 ? '0'+dd : 'a'+dd-10); } hex[8] = 0; uart_puts(hex); }
+            uart_puts("\r\n");
+            /* Dump raw response bytes for debug */
+            uart_puts("virtio-gpu: raw resp: ");
+            for (int i = 0; i < 48; ++i) {
+                u8 b = gpu_resp_buf[i];
+                char hex[3]; hex[0] = "0123456789abcdef"[b >> 4]; hex[1] = "0123456789abcdef"[b & 15]; hex[2] = 0; uart_puts(hex);
+            }
             uart_puts("\r\n");
             return -1;
         }
