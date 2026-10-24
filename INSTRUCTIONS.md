@@ -70,7 +70,19 @@ reliable end-to-end check.
 ## Roadmap
 
 1. virtio-net stack (Ethernet / ARP / IPv4 / ICMP) — **done**.
-2. Per-task EL0 translation tables; move drivers into isolated EL0 processes — **in progress**.
+2. Per-task EL0 translation tables; move drivers into isolated EL0 processes — **done** (net and blk drivers run at EL0 via SVC).
 3. Development headers / syscall surface — **done** (see dev/).
 4. GUI (virtio-gpu framebuffer + input) — `make run-gui` is the entry point.
 5. Phone hardware bring-up.
+
+## GUI Development (in progress)
+
+The GUI stack will consist of:
+
+- **virtio-gpu driver** (`drivers/virtio-gpu.c`) — MMIO discovery, queue setup, framebuffer allocation, display configuration.
+- **Framebuffer driver** (`drivers/framebuffer.c`) — abstracts the GPU framebuffer as a linear framebuffer.
+- **GUI framework** (`gui.c`) — basic drawing primitives (pixel, line, rect, text), window management, input handling.
+
+The `make run-gui` target now also attaches `mycelius.img` as virtio-blk so the GUI can access the filesystem.
+
+GUI draw commands are sent via IPC from user-space drivers to the kernel framebuffer driver.

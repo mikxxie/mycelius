@@ -128,6 +128,8 @@ void kernel_after_user(void) {
             vfs_use_ext4();
             uart_puts("mycelius: ext4 mounted read-write\r\n");
         }
+        gui_demo();
+        virtio_gpu_display();
         uart_puts("mycelius> type 'help'\r\nmycelius> ");
         for (;;) { driver_supervise(); net_poll(); cli_poll(); }
     }
