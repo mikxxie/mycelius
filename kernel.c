@@ -39,12 +39,15 @@ u32 page_free_count(void) {
 }
 
 void driver_supervise(void) {
+    int restarted = 0;
     for (u32 i = 0; i < MAX_TASKS; ++i) if (tasks[i].state == TASK_FAULTED) {
         u64 base = tasks[i].mmio_base, size = tasks[i].mmio_size;
         tasks[i].state = TASK_EMPTY;
         (void)task_create(i, base, size);
         uart_puts("mycelius: restarted driver\r\n");
+        restarted = 1;
     }
+    if (restarted) uart_puts("mycelius> ");
 }
 
 void mmu_map_page(u64 *pgd, u64 va, u64 pa, u64 attr);
