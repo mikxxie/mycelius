@@ -31,11 +31,11 @@ QEMU ?= qemu-system-aarch64
 QEMU_DISPLAY ?= gtk
 QEMU_COMMON := -M virt -cpu cortex-a72 -m 16M -kernel mycelius.bin -netdev user,id=net0 -device virtio-net-device,netdev=net0
 
-run: mycelius.bin
-	$(QEMU) $(QEMU_COMMON) -nographic
+run: mycelius.bin disk
+	$(QEMU) $(QEMU_COMMON) -nographic -drive if=none,file=mycelius.img,format=raw,id=blk0 -device virtio-blk-device,drive=blk0
 
-run-gui: mycelius.bin
-	$(QEMU) $(QEMU_COMMON) -display $(QEMU_DISPLAY) -serial mon:stdio
+run-gui: mycelius.bin disk
+	$(QEMU) $(QEMU_COMMON) -display $(QEMU_DISPLAY) -serial mon:stdio -drive if=none,file=mycelius.img,format=raw,id=blk0 -device virtio-blk-device,drive=blk0
 
 disk:
 	@test -e mycelius.img || qemu-img create -f raw mycelius.img 8M
