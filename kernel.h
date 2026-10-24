@@ -161,3 +161,6 @@ int virtio_net_rx(void *buf, u32 cap);
 int virtio_net_tx(const void *frame, u32 len);
 void user_cli_start(void);
 void kernel_after_user(void);
+void gui_init(void);
+void gui_demo(void);
+u32 gui_fb_addr(void);

@@ -8,7 +8,7 @@ OBJCOPY := $(CROSS)objcopy
 CFLAGS := -Wall -Wextra -Werror -O2 -ffreestanding -fno-builtin -fno-stack-protector \
           -nostdlib -nostartfiles -mgeneral-regs-only -march=armv8-a
 LDFLAGS := -T linker.ld -nostdlib -Wl,--build-id=none
-OBJS := boot.o vectors.o el0.o kernel.o ipc.o drivers.o cli.o mmu.o vfs.o net.o virtio.o ext4.o
+OBJS := boot.o vectors.o el0.o kernel.o ipc.o drivers.o cli.o mmu.o vfs.o net.o virtio.o ext4.o gui.o
 
 all: mycelius.bin
 

@@ -101,7 +101,8 @@ static void help_disp(void) {
         "restart blk    - Restart virtio-blk driver\r\n"
         "crash net      - Inject fault into net driver to test supervisor\r\n"
         "crash blk      - Inject fault into blk driver to test supervisor\r\n"
-        "mnu            - Show Mycelius New Utility menu\r\n");
+        "mnu            - Show Mycelius New Utility menu\r\n"
+        "gui            - Draw a demo to the software framebuffer\r\n");
 }
 
 /* Remove file or directory */
@@ -210,6 +211,7 @@ static void execute(void) {
         }
         /* The actual Ctrl+S/Ctrl+X handling is in cli_poll() */
     }
+    else if (same(line, "gui")) gui_demo();
     else if (line[0]) uart_puts("unknown command\r\n");
 }
 
