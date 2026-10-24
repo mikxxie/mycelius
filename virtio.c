@@ -346,60 +346,48 @@ int virtio_gpu_display(void) {
     }
 
     u64 base = devices[slot].base;
-    u32 version = R(base, 0x004);
 
-    /* --- Virtio device setup --- */
+    /* --- Virtio device setup ---
+     * QEMU 7.2's virtio-gpu is a MODERN (v2) virtio-MMIO device.
+     * Use modern register layout always. */
     R(base, 0x070) = 0;                  /* Reset */
     R(base, 0x070) = 1 | 2;              /* ACK | DRIVER */
 
-    if (version >= 2) {
-        /* Modern virtio-MMIO: negotiate VIRTIO_F_VERSION_1 */
-        R(base, 0x014) = 1;              /* FeatureSel = high word */
-        (void)R(base, 0x010);            /* Read device features high (discard) */
-        R(base, 0x024) = 1;              /* DriverFeaturesSel = high word */
-        R(base, 0x020) = 1u << 0;        /* Set VIRTIO_F_VERSION_1 (bit 32) */
-        R(base, 0x070) = 1 | 2 | 8;      /* ACK | DRIVER | FEATURES_OK */
-        if (!(R(base, 0x070) & 8)) {
-            uart_puts("virtio-gpu: FEATURES_OK rejected\r\n");
-            return -1;
-        }
-
-        /* Modern queue setup (separate ring addresses) */
-        R(base, 0x028) = 4096;           /* GuestPageSize */
-        R(base, 0x030) = 0;              /* QueueSel = 0 */
-        u32 max = R(base, 0x034);        /* QueueNumMax */
-        if (!max) max = 8;
-        R(base, 0x038) = max < 8 ? max : 8;
-        R(base, 0x03c) = 16;             /* QueueAlign (16 bytes) */
-
-        u64 dpa = (u64)&gpu_desc[0];
-        u64 apa = (u64)&gpu_avail[0];
-        u64 upa = (u64)&gpu_used[0];
-        R(base, 0x080) = (u32)(dpa & 0xFFFFFFFF);   /* QueueDescLow */
-        R(base, 0x084) = (u32)(dpa >> 32);          /* QueueDescHigh */
-        R(base, 0x090) = (u32)(apa & 0xFFFFFFFF);   /* QueueDriverLow */
-        R(base, 0x094) = (u32)(apa >> 32);          /* QueueDriverHigh */
-        R(base, 0x0A0) = (u32)(upa & 0xFFFFFFFF);   /* QueueDeviceLow */
-        R(base, 0x0A4) = (u32)(upa >> 32);          /* QueueDeviceHigh */
-        R(base, 0x044) = 1;             /* QueueReady */
-
-        /* Read QueueNotify offset from config space */
-        R(base, 0x014) = 0;              /* FeatureSel = low word */
-        gpu_notify_off = R(base, 0x088); /* QueueNotify config offset */
-
-        R(base, 0x070) = 1 | 2 | 8 | 4;  /* ACK | DRIVER | FEATURES_OK | DRIVER_OK */
-    } else {
-        /* Legacy virtio-MMIO */
-        R(base, 0x028) = 4096;           /* GuestPageSize */
-        R(base, 0x030) = 0;              /* QueueSel = 0 */
-        u32 max = R(base, 0x034);        /* QueueNumMax */
-        if (!max) max = 8;
-        R(base, 0x038) = max < 8 ? max : 8;
-        R(base, 0x03c) = 4096;           /* QueueAlign */
-        R(base, 0x040) = (u32)((u64)&legacy_queue[slot][0] >> 12); /* QueueDesc (pfn) */
-        R(base, 0x070) = 1 | 2 | 4;      /* ACK | DRIVER | DRIVER_OK */
-        gpu_notify_off = 0x050;          /* QueueNotify (legacy) */
+    /* Feature negotiation: VIRTIO_F_VERSION_1 */
+    R(base, 0x014) = 1;                  /* FeatureSel = high word */
+    (void)R(base, 0x010);                /* Read features high (discard) */
+    R(base, 0x024) = 1;                  /* DriverFeaturesSel = high word */
+    R(base, 0x020) = 1u << 0;            /* Set VIRTIO_F_VERSION_1 (bit 32) */
+    R(base, 0x070) = 1 | 2 | 8;          /* ACK | DRIVER | FEATURES_OK */
+    if (!(R(base, 0x070) & 8)) {
+        uart_puts("virtio-gpu: FEATURES_OK rejected\r\n");
+        return -1;
     }
+
+    /* Modern queue setup (separate ring addresses) */
+    R(base, 0x028) = 4096;               /* GuestPageSize */
+    R(base, 0x030) = 0;                  /* QueueSel = 0 */
+    u32 max = R(base, 0x034);            /* QueueNumMax */
+    if (!max) max = 8;
+    R(base, 0x038) = max < 8 ? max : 8;
+    R(base, 0x03c) = 16;                 /* QueueAlign (16 bytes) */
+
+    u64 dpa = (u64)&gpu_desc[0];
+    u64 apa = (u64)&gpu_avail[0];
+    u64 upa = (u64)&gpu_used[0];
+    R(base, 0x080) = (u32)(dpa & 0xFFFFFFFF);   /* QueueDescLow */
+    R(base, 0x084) = (u32)(dpa >> 32);          /* QueueDescHigh */
+    R(base, 0x090) = (u32)(apa & 0xFFFFFFFF);   /* QueueDriverLow */
+    R(base, 0x094) = (u32)(apa >> 32);          /* QueueDriverHigh */
+    R(base, 0x0A0) = (u32)(upa & 0xFFFFFFFF);   /* QueueDeviceLow */
+    R(base, 0x0A4) = (u32)(upa >> 32);          /* QueueDeviceHigh */
+    R(base, 0x044) = 1;             /* QueueReady */
+
+    /* Read QueueNotify offset from config space */
+    R(base, 0x014) = 0;              /* FeatureSel = low word */
+    gpu_notify_off = R(base, 0x088); /* QueueNotify config offset */
+
+    R(base, 0x070) = 1 | 2 | 8 | 4;  /* ACK | DRIVER | FEATURES_OK | DRIVER_OK */
 
     u32 fb_pa = gui_fb_addr();
     if (!fb_pa) {
@@ -410,28 +398,14 @@ int virtio_gpu_display(void) {
     u32 width = gui_fb_width();
     u32 height = gui_fb_height();
 
-    /* Set up ring pointers based on version */
-    struct desc *d;
-    volatile u16 *avail;
-    volatile u16 *used;
-
-    if (version >= 2) {
-        /* Modern: separate ring addresses */
-        d = (struct desc *)gpu_desc;
-        avail = (volatile u16 *)gpu_avail;
-        used = (volatile u16 *)gpu_used;
-        /* Zero everything */
-        for (int i = 0; i < 8; i++) { d[i].addr = 0; d[i].len = 0; d[i].flags = 0; d[i].next = 0; }
-        avail[0] = 0; avail[1] = 0; avail[2] = 0; avail[3] = 0;
-        used[0] = 0; used[1] = 0;
-    } else {
-        /* Legacy: single 8KB buffer with descriptors@0, avail@128, used@4096 */
-        d = (struct desc *)legacy_queue[slot];
-        avail = (volatile u16 *)(legacy_queue[slot] + 16 * 8);
-        used = (volatile u16 *)(legacy_queue[slot] + 4096);
-        /* Zero everything */
-        for (int i = 0; i < 8192; i++) legacy_queue[slot][i] = 0;
-    }
+    /* Modern: separate ring addresses */
+    struct desc *d = (struct desc *)gpu_desc;
+    volatile u16 *avail = (volatile u16 *)gpu_avail;
+    volatile u16 *used = (volatile u16 *)gpu_used;
+    /* Zero everything */
+    for (int i = 0; i < 8; i++) { d[i].addr = 0; d[i].len = 0; d[i].flags = 0; d[i].next = 0; }
+    avail[0] = 0; avail[1] = 0; avail[2] = 0; avail[3] = 0;
+    used[0] = 0; used[1] = 0;
 
     /* --- 1. GET_DISPLAY_INFO --- */
     {
@@ -456,6 +430,9 @@ int virtio_gpu_display(void) {
             barrier();
             if (used[1] == target) {
                 struct gpu_resp_hdr *resp = (struct gpu_resp_hdr *)gpu_resp_buf;
+                uart_puts("virtio-gpu: GET_DISPLAY_INFO resp type=");
+                { char hex[9]; u32 v = resp->type; for (int i = 7; i >= 0; --i) { u32 dd = (v >> (i*4)) & 0xF; hex[7-i] = (char)(dd < 10 ? '0'+dd : 'a'+dd-10); } hex[8] = 0; uart_puts(hex); }
+                uart_puts("\r\n");
                 if (resp->type != GPU_RESP_OK_DISPLAYINFO) {
                     uart_puts("virtio-gpu: GET_DISPLAY_INFO failed\r\n");
                     return -1;
