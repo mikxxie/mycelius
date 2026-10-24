@@ -44,12 +44,25 @@ void virtio_probe(void) {
                 R(base, 0x040) = (u32)((u64)&legacy_tx_queue[count][0] >> 12);
             }
             R(base, 0x070) |= 4;
-        } else if (version != 2) continue;
-        /* modern v2: just record, queue setup deferred to driver */
-        R(base, 0x070) = 0;                  /* Reset */
-        R(base, 0x070) = 1 | 2;              /* ACK | DRIVER */
-        R(base, 0x028) = 4096;               /* GuestPageSize */
-        devices[count++] = (struct device){ base, id };
+            devices[count++] = (struct device){ base, id };
+            continue;
+        } else if (version == 2) {
+            /* modern v2: full setup */
+            R(base, 0x070) = 0;                  /* Reset */
+            R(base, 0x070) = 1 | 2;              /* ACK | DRIVER */
+            R(base, 0x028) = 4096;               /* GuestPageSize */
+            R(base, 0x030) = 0;                  /* QueueSel = 0 */
+            u32 max = R(base, 0x034);            /* QueueNumMax */
+            if (!max) continue;
+            R(base, 0x038) = max < 8 ? max : 8;
+            R(base, 0x03c) = 16;                 /* QueueAlign */
+            u64 qpa = (u64)&legacy_queue[count][0];
+            R(base, 0x040) = (u32)qpa;           /* QueueDescLow */
+            R(base, 0x044) = (u32)(qpa >> 32);   /* QueueDescHigh */
+            R(base, 0x044) = 1;                  /* QueueReady */
+            devices[count++] = (struct device){ base, id };
+            continue;
+        } else continue;
     }
 }
 void virtio_status(void) {
@@ -81,17 +94,18 @@ int virtio_blk_read(u64 sector, void *buffer) {
     for (u32 i = 0; i < count; ++i) if (devices[i].id == 2) { slot = i; break; }
     if (slot == 8) return -1;
     u8 *q = legacy_queue[slot]; struct desc *d = (struct desc *)q;
-    volatile u16 *avail = (volatile u16 *)(q + 16 * 8); /* flags, idx, ring[] */
-    volatile u16 *used = (volatile u16 *)(q + 4096);    /* flags, idx, elements */
+    volatile u16 *avail = (volatile u16 *)(q + 16 * 8);
+    volatile u16 *used = (volatile u16 *)(q + 4096);
     request.type = 0; request.reserved = 0; request.sector = sector; request_status = 0xff;
     d[0] = (struct desc){ (u64)&request, 16, 1, 1 };
-    d[1] = (struct desc){ (u64)buffer, 512, 1 | 2, 2 }; /* device writes data */
+    d[1] = (struct desc){ (u64)buffer, 512, 1 | 2, 2 };
     d[2] = (struct desc){ (u64)&request_status, 1, 2, 0 };
     u16 index = avail[1]; avail[2 + (index & 7)] = 0; barrier(); avail[1] = index + 1;
     barrier();
     u16 target = used[1] + 1;
-    R(devices[slot].base, 0x050) = 0; /* QueueNotify */
-    for (u32 spins = 0; spins < 2000000; ++spins) {
+    R(devices[slot].base, 0x050) = 0;
+    u32 spins;
+    for (spins = 0; spins < 2000000; ++spins) {
         barrier();
         if (used[1] == target) {
             blk_used_seen = target;

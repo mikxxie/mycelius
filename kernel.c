@@ -122,11 +122,14 @@ void kernel_after_user(void) {
         uart_puts("mycelius: calling virtio_blk_driver_entry at EL0\r\n");
         task_launch(2, 0x00405000UL, 2, TASK_IPC_VA);
     } else {
+        driver_supervise();
         net_init();
         net_set_up(1);
         if (ext4_mount() == 0) {
             vfs_use_ext4();
             uart_puts("mycelius: ext4 mounted read-write\r\n");
+        } else {
+            uart_puts("mycelius: ext4 mount failed\r\n");
         }
         gui_demo();
         virtio_gpu_display();
