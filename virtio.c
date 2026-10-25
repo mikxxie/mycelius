@@ -4,7 +4,7 @@
 #define BASE 0x0a000000UL
 #define SLOT 0x200UL
 #define R(base, off) (*(volatile u32 *)((base) + (off)))
-struct device { u64 base; u32 id; };
+struct device { u64 base; u32 id; u32 queue_idx; };
 static struct device devices[8];
 static u32 count;
 static u8 legacy_queue[8][8192] __attribute__((aligned(4096)));
@@ -44,7 +44,7 @@ void virtio_probe(void) {
                 R(base, 0x040) = (u32)((u64)&legacy_tx_queue[count][0] >> 12);
             }
             R(base, 0x070) |= 4;
-            devices[count++] = (struct device){ base, id };
+            devices[count++] = (struct device){ base, id, count };
             continue;
         } else if (version == 2) {
             /* modern v2: full setup */
@@ -60,7 +60,7 @@ void virtio_probe(void) {
             R(base, 0x040) = (u32)qpa;           /* QueueDescLow */
             R(base, 0x044) = (u32)(qpa >> 32);   /* QueueDescHigh */
             R(base, 0x044) = 1;                  /* QueueReady */
-            devices[count++] = (struct device){ base, id };
+            devices[count++] = (struct device){ base, id, count };
             continue;
         } else continue;
     }
@@ -317,6 +317,14 @@ struct gpu_resource_flush {
     u32 padding;
 };
 
+struct gpu_transfer_to_host_2d {
+    struct gpu_ctrl_hdr hdr;
+    struct gpu_rect r;
+    u64 offset;
+    u32 resource_id;
+    u32 padding;
+};
+
 struct gpu_mem_entry {
     u64 addr;
     u32 length;
@@ -533,6 +541,12 @@ int virtio_gpu_display(void) {
         barrier();
         R(base, gpu_notify_off) = 0;
 
+        avail[2] = 0; avail[3] = 1;
+        barrier();
+        avail[1] = 1;
+        barrier();
+        R(base, gpu_notify_off) = 0;
+
         u16 target = used[1] + 1;
         for (u32 spins = 0; spins < 2000000; ++spins) {
             barrier();
@@ -540,7 +554,37 @@ int virtio_gpu_display(void) {
         }
     }
 
-    /* --- 5. RESOURCE_FLUSH --- */
+    /* --- 5. TRANSFER_TO_HOST_2D (copy pixels to GPU) --- */
+    {
+        struct gpu_ctrl_hdr *ch = (struct gpu_ctrl_hdr *)gpu_cmd_buf;
+        gpu_hdr_init(ch, GPU_CMD_TRANSFER_TO_HOST_2D);
+        struct gpu_transfer_to_host_2d *t = (struct gpu_transfer_to_host_2d *)gpu_cmd_buf;
+        t->r.x = 0;
+        t->r.y = 0;
+        t->r.width = width;
+        t->r.height = height;
+        t->offset = 0;
+        t->resource_id = 1;
+        t->padding = 0;
+
+        d[0] = (struct desc){ (u64)gpu_cmd_buf, sizeof(struct gpu_transfer_to_host_2d), 1, 1 };
+        d[1] = (struct desc){ (u64)gpu_resp_buf, sizeof(struct gpu_resp_hdr), 2, 0 };
+
+        avail[2] = 0; avail[3] = 1;
+        barrier();
+        avail[1] = 1;
+        barrier();
+        R(base, gpu_notify_off) = 0;
+
+        u16 target = used[1] + 1;
+        for (u32 spins = 0; spins < 2000000; ++spins) {
+            barrier();
+            if (used[1] == target) break;
+        }
+        uart_puts("virtio-gpu: TRANSFER_TO_HOST_2D done\r\n");
+    }
+
+    /* --- 6. RESOURCE_FLUSH --- */
     {
         struct gpu_ctrl_hdr *ch = (struct gpu_ctrl_hdr *)gpu_cmd_buf;
         gpu_hdr_init(ch, GPU_CMD_RESOURCE_FLUSH);
