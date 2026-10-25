@@ -9,6 +9,9 @@
 #define FB_BPP    4   /* 32-bit RGBA */
 #define FB_SIZE   (FB_WIDTH * FB_HEIGHT * FB_BPP)
 
+/* Flat framebuffer at a fixed physical address that QEMU's virtio-gpu
+ * can scan out.  Placed at 0x400c9000 — within the kernel's identity-mapped
+ * RAM region so VA == PA for DMA. */
 static u32 fb_buf[FB_WIDTH * FB_HEIGHT] __attribute__((aligned(4096)));
 static u32 *fb = fb_buf;
 static u32  fb_pa = 0;
@@ -75,11 +78,26 @@ void gui_init(void) {
     if (fb_pa) return;
     fb_pa = (u64)fb;
     for (u32 i = 0; i < FB_WIDTH * FB_HEIGHT; ++i) fb[i] = COLOR_BLACK;
+    uart_puts("gui: flat framebuffer at 0x");
+    for (int i = 28; i >= 0; i -= 4) {
+        u32 d = (u32)((fb_pa >> i) & 0xf);
+        char c[2] = { d < 10 ? '0' + d : 'a' + d - 10, 0 };
+        uart_puts(c);
+    }
+    uart_puts(" (320x240x32)\r\n");
 }
 
 u32 gui_fb_addr(void) { return (u32)fb_pa; }
 u32 gui_fb_width(void) { return FB_WIDTH; }
 u32 gui_fb_height(void) { return FB_HEIGHT; }
+
+/* Flat framebuffer fallback — writes pixels directly to the framebuffer.
+ * QEMU's virtio-gpu can scan out this memory via RESOURCE_ATTACH_BACKING
+ * and RESOURCE_SET_SCANOUT.  Until virtio-gpu is fully working, this lets
+ * us verify the framebuffer contents via serial. */
+void gui_fb_flush(void) {
+    /* No-op for flat framebuffer — pixels are already in memory */
+}
 
 void gui_demo(void) {
     gui_init();

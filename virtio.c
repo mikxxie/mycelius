@@ -43,7 +43,8 @@ void virtio_probe(void) {
                 R(base, 0x03c) = 4096;
                 R(base, 0x040) = (u32)((u64)&legacy_tx_queue[count][0] >> 12);
             }
-            R(base, 0x070) |= 4;
+            /* Note: DRIVER_OK is NOT set here - it's set by the individual
+             * driver after feature negotiation (see virtio_gpu_display) */
             devices[count++] = (struct device){ base, id, count };
             continue;
         } else if (version == 2) {
@@ -57,8 +58,12 @@ void virtio_probe(void) {
             R(base, 0x038) = max < 8 ? max : 8;
             R(base, 0x03c) = 16;                 /* QueueAlign */
             u64 qpa = (u64)&legacy_queue[count][0];
-            R(base, 0x040) = (u32)qpa;           /* QueueDescLow */
-            R(base, 0x044) = (u32)(qpa >> 32);   /* QueueDescHigh */
+            R(base, 0x080) = (u32)qpa;           /* QueueDescLow */
+            R(base, 0x084) = (u32)(qpa >> 32);   /* QueueDescHigh */
+            R(base, 0x090) = (u32)((u64)&legacy_queue[count][128]);   /* QueueDriverLow */
+            R(base, 0x094) = (u32)((u64)&legacy_queue[count][128] >> 32); /* QueueDriverHigh */
+            R(base, 0x0A0) = (u32)((u64)&legacy_queue[count][4096]);   /* QueueDeviceLow */
+            R(base, 0x0A4) = (u32)((u64)&legacy_queue[count][4096] >> 32); /* QueueDeviceHigh */
             R(base, 0x044) = 1;                  /* QueueReady */
             devices[count++] = (struct device){ base, id, count };
             continue;
@@ -248,13 +253,13 @@ int virtio_net_tx(const void *frame, u32 len) {
 
 #define VIRTIO_ID_GPU 16
 
-/* Virtio-GPU command types */
-#define GPU_CMD_GET_DISPLAY_INFO   0
-#define GPU_CMD_RESOURCE_CREATE_2D 1
-#define GPU_CMD_RESOURCE_SET_SCANOUT 2
-#define GPU_CMD_RESOURCE_FLUSH     3
-#define GPU_CMD_RESOURCE_ATTACH_BACKING 4
-#define GPU_CMD_TRANSFER_TO_HOST_2D 6
+/* Virtio-GPU command types (per VirtIO-GPU spec) */
+#define GPU_CMD_GET_DISPLAY_INFO   0x0300
+#define GPU_CMD_RESOURCE_CREATE_2D 0x0301
+#define GPU_CMD_RESOURCE_SET_SCANOUT 0x0302
+#define GPU_CMD_RESOURCE_FLUSH     0x0303
+#define GPU_CMD_RESOURCE_ATTACH_BACKING 0x0304
+#define GPU_CMD_TRANSFER_TO_HOST_2D 0x0306
 
 /* Virtio-GPU flags */
 #define GPU_FLAG_FENCE (1u << 0)
@@ -338,22 +343,15 @@ struct gpu_resource_attach_backing {
     u32 padding;
 };
 
-/* Command and response pages for virtio-gpu control structures */
-static u8 gpu_cmd_buf[4096] __attribute__((aligned(4096)));
-static u8 gpu_resp_buf[4096] __attribute__((aligned(4096)));
-static u8 gpu_desc[1024] __attribute__((aligned(16)));   /* 8 descriptors x 16 bytes */
-static u8 gpu_avail[256] __attribute__((aligned(2)));    /* flags + idx + ring */
-static u8 gpu_used[512] __attribute__((aligned(4)));     /* flags + idx + elements */
-static u32 gpu_notify_off = 0x050; /* legacy default */
+static u32 gpu_notify_off = 0x050; /* legacy MMIO QueueNotify offset */
 
-static u64 gpu_fence_next = 1;
-
-/* Fill a virtio-gpu control header with fence flag + incrementing fence ID.
- * Host is little-endian; device expects little-endian. Raw writes are correct. */
+/* Fill a virtio-gpu control header.
+ * Legacy virtio-MMIO (QEMU virt) does not use fence flags, so flags=0.
+ */
 static void gpu_hdr_init(struct gpu_ctrl_hdr *ch, u32 type) {
     ch->type = type;
-    ch->flags = GPU_FLAG_FENCE;
-    ch->fence_id = gpu_fence_next++;
+    ch->flags = 0;
+    ch->fence_id = 0;
     ch->ctx_id = 0;
     ch->padding = 0;
 }
@@ -369,47 +367,67 @@ int virtio_gpu_display(void) {
 
     u64 base = devices[slot].base;
 
-    /* --- Virtio device setup ---
-     * QEMU 7.2's virtio-gpu is a MODERN (v2) virtio-MMIO device.
-     * Use modern register layout always. */
-    R(base, 0x070) = 0;                  /* Reset */
-    R(base, 0x070) = 1 | 2;              /* ACK | DRIVER */
+    /* QEMU virt exposes virtio-gpu as legacy MMIO v1. virtio_probe() already
+     * set up status=ACK|DRIVER|DRIVER_OK and queue 0 with legacy MMIO offsets.
+     * Just use the existing queue. */
+    gpu_notify_off = 0x050; /* legacy MMIO QueueNotify offset */
 
-    /* Feature negotiation: VIRTIO_F_VERSION_1 */
-    R(base, 0x014) = 1;                  /* FeatureSel = high word */
-    (void)R(base, 0x010);                /* Read features high (discard) */
-    R(base, 0x024) = 1;                  /* DriverFeaturesSel = high word */
-    R(base, 0x020) = 1u << 0;            /* Set VIRTIO_F_VERSION_1 (bit 32) */
-    R(base, 0x070) = 1 | 2 | 8;          /* ACK | DRIVER | FEATURES_OK */
-    if (!(R(base, 0x070) & 8)) {
+    /* Feature negotiation: read device features low word (offset 0x010 with
+     * FeatureSel=0) to find offered features. QEMU offers VIRTIO_F_VERSION_1
+     * (bit 28) which we must negotiate before it accepts commands. */
+    R(base, 0x014) = 0;              /* FeatureSel = low word */
+    u32 feat_lo = R(base, 0x010);    /* Read device features low */
+    u32 status;
+    uart_puts("virtio-gpu: device features low=0x");
+    { char h[9]; u32 v = feat_lo; for (int i = 7; i >= 0; --i) { u32 d = (v >> (i*4)) & 0xF; h[7-i] = (char)(d < 10 ? '0'+d : 'a'+d-10); } h[8] = 0; uart_puts(h); }
+    uart_puts("\r\n");
+
+    /* Negotiate VIRTIO_F_VERSION_1 (bit 28) - QEMU requires this */
+    if (feat_lo & (1u << 28)) {
+        R(base, 0x024) = 0;          /* DriverFeaturesSel = low word */
+        R(base, 0x020) = 1u << 28;   /* Set VIRTIO_F_VERSION_1 */
+        uart_puts("virtio-gpu: set VIRTIO_F_VERSION_1\r\n");
+    } else {
+        uart_puts("virtio-gpu: WARNING - VIRTIO_F_VERSION_1 not offered!\r\n");
+    }
+
+    /* Set FEATURES_OK, then DRIVER_OK (correct ordering per VirtIO spec) */
+    R(base, 0x070) |= 8;             /* FEATURES_OK */
+    status = R(base, 0x070);
+    if (!(status & 8)) {
         uart_puts("virtio-gpu: FEATURES_OK rejected\r\n");
         return -1;
     }
+    uart_puts("virtio-gpu: FEATURES_OK accepted\r\n");
 
-    /* Modern queue setup (separate ring addresses) */
-    R(base, 0x028) = 4096;               /* GuestPageSize */
-    R(base, 0x030) = 0;                  /* QueueSel = 0 */
-    u32 max = R(base, 0x034);            /* QueueNumMax */
+    R(base, 0x070) |= 4;             /* DRIVER_OK */
+    status = R(base, 0x070);
+    if (!(status & 4)) {
+        uart_puts("virtio-gpu: DRIVER_OK rejected\r\n");
+        return -1;
+    }
+    uart_puts("virtio-gpu: DRIVER_OK accepted\r\n");
+
+    /* Re-setup queue after DRIVER_OK — QEMU may require queue configuration
+     * after DRIVER_OK before it processes commands. */
+    R(base, 0x030) = 0;              /* QueueSel = 0 */
+    u32 max = R(base, 0x034);        /* QueueNumMax */
     if (!max) max = 8;
     R(base, 0x038) = max < 8 ? max : 8;
-    R(base, 0x03c) = 16;                 /* QueueAlign (16 bytes) */
+    R(base, 0x03c) = 4096;           /* QueueAlign */
+    R(base, 0x040) = (u32)((u64)&legacy_queue[slot][0] >> 12);  /* QueueDesc PFN */
 
-    u64 dpa = (u64)&gpu_desc[0];
-    u64 apa = (u64)&gpu_avail[0];
-    u64 upa = (u64)&gpu_used[0];
-    R(base, 0x080) = (u32)(dpa & 0xFFFFFFFF);   /* QueueDescLow */
-    R(base, 0x084) = (u32)(dpa >> 32);          /* QueueDescHigh */
-    R(base, 0x090) = (u32)(apa & 0xFFFFFFFF);   /* QueueDriverLow */
-    R(base, 0x094) = (u32)(apa >> 32);          /* QueueDriverHigh */
-    R(base, 0x0A0) = (u32)(upa & 0xFFFFFFFF);   /* QueueDeviceLow */
-    R(base, 0x0A4) = (u32)(upa >> 32);          /* QueueDeviceHigh */
-    R(base, 0x044) = 1;             /* QueueReady */
-
-    /* Read QueueNotify offset from config space */
-    R(base, 0x014) = 0;              /* FeatureSel = low word */
-    gpu_notify_off = R(base, 0x088); /* QueueNotify config offset */
-
-    R(base, 0x070) = 1 | 2 | 8 | 4;  /* ACK | DRIVER | FEATURES_OK | DRIVER_OK */
+    /* Allocate command/response pages from page_alloc() so we know their
+     * physical addresses for DMA. QEMU DMA reads physical addresses, not
+     * kernel virtual addresses. */
+    u64 cmd_pa = (u64)page_alloc();
+    u64 resp_pa = (u64)page_alloc();
+    if (!cmd_pa || !resp_pa) {
+        uart_puts("virtio-gpu: page_alloc failed\r\n");
+        return -1;
+    }
+    volatile u8 *cmd_buf = (volatile u8 *)cmd_pa;   /* identity-mapped at 0x40000000 */
+    volatile u8 *resp_buf = (volatile u8 *)resp_pa;
 
     u32 fb_pa = gui_fb_addr();
     if (!fb_pa) {
@@ -419,146 +437,129 @@ int virtio_gpu_display(void) {
 
     u32 width = gui_fb_width();
     u32 height = gui_fb_height();
+    u32 num_scanouts;
 
-    /* Modern: separate ring addresses */
-    struct desc *d = (struct desc *)gpu_desc;
-    volatile u16 *avail = (volatile u16 *)gpu_avail;
-    volatile u16 *used = (volatile u16 *)gpu_used;
-    /* Zero everything */
-    for (int i = 0; i < 8; i++) { d[i].addr = 0; d[i].len = 0; d[i].flags = 0; d[i].next = 0; }
-    avail[0] = 0; avail[1] = 0; avail[2] = 0; avail[3] = 0;
-    used[0] = 0; used[1] = 0;
+    /* Read GPU config space before any commands (QEMU requires this) */
+    R(base, 0x114) = 0;   /* ConfigSel = events_read */
+    (void)R(base, 0x110);
+    R(base, 0x114) = 1;   /* ConfigSel = events_clear */
+    (void)R(base, 0x110);
+    R(base, 0x114) = 2;   /* ConfigSel = num_scanouts */
+    num_scanouts = R(base, 0x110);
+    uart_puts("virtio-gpu: num_scanouts=");
+    { char h[2]; u32 v = num_scanouts; h[0] = (char)('0' + v); h[1] = 0; uart_puts(h); }
+    uart_puts("\r\n");
+    R(base, 0x114) = 3;   /* ConfigSel = num_capsets */
+    (void)R(base, 0x110);
+
+    /* Legacy queue layout: descriptors@0, avail@128, used@4096 */
+    struct desc *d = (struct desc *)legacy_queue[slot];
+    volatile u16 *avail = (volatile u16 *)(legacy_queue[slot] + 16 * 8);
+    volatile u16 *used = (volatile u16 *)(legacy_queue[slot] + 4096);
+
+    /* Helper: submit one command and wait for completion */
+    #define GPU_CMD(cmd_type, cmd_size, resp_size) do { \
+        barrier(); \
+        avail[2] = 0; avail[3] = 0; \
+        barrier(); \
+        avail[1] = 1; \
+        barrier(); \
+        R(base, gpu_notify_off) = 0; \
+        u16 target = used[1] + 1; \
+        for (u32 spins = 0; spins < 5000000; ++spins) { \
+            barrier(); \
+            if (used[1] == target) goto done_##cmd_type; \
+        } \
+        uart_puts("virtio-gpu: " #cmd_type " timeout\r\n"); \
+        return -1; \
+        done_##cmd_type:; \
+    } while (0)
 
     /* --- 1. GET_DISPLAY_INFO --- */
     {
-        struct gpu_ctrl_hdr *ch = (struct gpu_ctrl_hdr *)gpu_cmd_buf;
+        static u64 fence_id = 1;
+        struct gpu_ctrl_hdr *ch = (struct gpu_ctrl_hdr *)cmd_buf;
         ch->type = GPU_CMD_GET_DISPLAY_INFO;
-        ch->flags = 0;
-        ch->fence_id = 0;
+        ch->flags = GPU_FLAG_FENCE;
+        ch->fence_id = fence_id++;
         ch->ctx_id = 0;
         ch->padding = 0;
 
-        d[0] = (struct desc){ (u64)gpu_cmd_buf, sizeof(struct gpu_ctrl_hdr), 1, 1 };
-        d[1] = (struct desc){ (u64)gpu_resp_buf, sizeof(struct gpu_resp_hdr), 2, 0 };
+        d[0] = (struct desc){ cmd_pa, sizeof(struct gpu_ctrl_hdr), 1, 1 };
+        d[1] = (struct desc){ resp_pa, sizeof(struct gpu_display_info), 2, 0 };
 
-        avail[2] = 0; avail[3] = 1;
-        barrier();
-        avail[1] = 1;
-        barrier();
-        R(base, gpu_notify_off) = 0;
+        GPU_CMD(GET_DISPLAY_INFO, sizeof(struct gpu_ctrl_hdr), sizeof(struct gpu_display_info));
 
-        u16 target = used[1] + 1;
-        for (u32 spins = 0; spins < 2000000; ++spins) {
-            barrier();
-            if (used[1] == target) {
-                struct gpu_resp_hdr *resp = (struct gpu_resp_hdr *)gpu_resp_buf;
-                uart_puts("virtio-gpu: GET_DISPLAY_INFO resp type=");
-                { char hex[9]; u32 v = resp->type; for (int i = 7; i >= 0; --i) { u32 dd = (v >> (i*4)) & 0xF; hex[7-i] = (char)(dd < 10 ? '0'+dd : 'a'+dd-10); } hex[8] = 0; uart_puts(hex); }
-                uart_puts("\r\n");
-                if (resp->type != GPU_RESP_OK_DISPLAYINFO) {
-                    uart_puts("virtio-gpu: GET_DISPLAY_INFO failed\r\n");
-                    return -1;
-                }
-                break;
-            }
+        struct gpu_display_info *disp = (struct gpu_display_info *)resp_buf;
+        if (disp->hdr.type != GPU_RESP_OK_DISPLAYINFO) {
+            uart_puts("virtio-gpu: GET_DISPLAY_INFO failed, type=");
+            { u32 v = disp->hdr.type; char h[9]; for (int i = 7; i >= 0; --i) { u32 dd = (v >> (i*4)) & 0xF; h[7-i] = (char)(dd < 10 ? '0'+dd : 'a'+dd-10); } h[8] = 0; uart_puts(h); }
+            uart_puts("\r\n");
+            return -1;
         }
+        uart_puts("virtio-gpu: GET_DISPLAY_INFO OK\r\n");
+        uart_puts("virtio-gpu: display=");
+        { char w[6]; u32 v = disp->rect.width; for (int i = 4; i >= 0; --i) { u32 d = (v >> (i*4)) & 0xF; w[4-i] = (char)(d < 10 ? '0'+d : 'a'+d-10); } w[5] = 0; uart_puts(w); }
+        uart_puts("x");
+        { char h[6]; u32 v = disp->rect.height; for (int i = 4; i >= 0; --i) { u32 d = (v >> (i*4)) & 0xF; h[4-i] = (char)(d < 10 ? '0'+d : 'a'+d-10); } h[5] = 0; uart_puts(h); }
+        uart_puts("\r\n");
     }
 
     /* --- 2. RESOURCE_CREATE_2D --- */
     {
-        struct gpu_ctrl_hdr *ch = (struct gpu_ctrl_hdr *)gpu_cmd_buf;
+        struct gpu_ctrl_hdr *ch = (struct gpu_ctrl_hdr *)cmd_buf;
         gpu_hdr_init(ch, GPU_CMD_RESOURCE_CREATE_2D);
-        struct gpu_resource_create_2d *rc = (struct gpu_resource_create_2d *)gpu_cmd_buf;
+        struct gpu_resource_create_2d *rc = (struct gpu_resource_create_2d *)cmd_buf;
         rc->resource_id = 1;
         rc->format = GPU_FORMAT_RGBA8888;
         rc->width = width;
         rc->height = height;
 
-        d[0] = (struct desc){ (u64)gpu_cmd_buf, sizeof(struct gpu_resource_create_2d), 1, 1 };
-        d[1] = (struct desc){ (u64)gpu_resp_buf, sizeof(struct gpu_resp_hdr), 2, 0 };
+        d[0] = (struct desc){ cmd_pa, sizeof(struct gpu_resource_create_2d), 1, 1 };
+        d[1] = (struct desc){ resp_pa, sizeof(struct gpu_resp_hdr), 2, 0 };
 
-        avail[2] = 0; avail[3] = 1;
-        barrier();
-        avail[1] = 1;
-        barrier();
-        R(base, gpu_notify_off) = 0;
+        GPU_CMD(RESOURCE_CREATE_2D, sizeof(struct gpu_resource_create_2d), sizeof(struct gpu_resp_hdr));
 
-        u16 target = used[1] + 1;
-        for (u32 spins = 0; spins < 2000000; ++spins) {
-            barrier();
-            if (used[1] == target) break;
+        struct gpu_resp_hdr *resp = (struct gpu_resp_hdr *)resp_buf;
+        if (resp->type != GPU_RESP_OK_NODATA) {
+            uart_puts("virtio-gpu: RESOURCE_CREATE_2D failed\r\n");
+            return -1;
         }
+        uart_puts("virtio-gpu: RESOURCE_CREATE_2D done\r\n");
     }
 
     /* --- 3. RESOURCE_ATTACH_BACKING --- */
     {
-        struct gpu_ctrl_hdr *ch = (struct gpu_ctrl_hdr *)gpu_cmd_buf;
+        struct gpu_ctrl_hdr *ch = (struct gpu_ctrl_hdr *)cmd_buf;
         gpu_hdr_init(ch, GPU_CMD_RESOURCE_ATTACH_BACKING);
-        struct gpu_resource_attach_backing *ab = (struct gpu_resource_attach_backing *)gpu_cmd_buf;
+        struct gpu_resource_attach_backing *ab = (struct gpu_resource_attach_backing *)cmd_buf;
         ab->resource_id = 1;
         ab->num_entries = 1;
         ab->padding = 0;
-        struct gpu_mem_entry *me = (struct gpu_mem_entry *)(gpu_cmd_buf + sizeof(struct gpu_resource_attach_backing));
+        struct gpu_mem_entry *me = (struct gpu_mem_entry *)(cmd_buf + sizeof(struct gpu_resource_attach_backing));
         me->addr = fb_pa;
         me->length = width * height * 4;
         me->padding = 0;
 
         u32 ab_size = sizeof(struct gpu_resource_attach_backing) + sizeof(struct gpu_mem_entry);
-        d[0] = (struct desc){ (u64)gpu_cmd_buf, ab_size, 1, 1 };
-        d[1] = (struct desc){ (u64)gpu_resp_buf, sizeof(struct gpu_resp_hdr), 2, 0 };
+        d[0] = (struct desc){ cmd_pa, ab_size, 1, 1 };
+        d[1] = (struct desc){ resp_pa, sizeof(struct gpu_resp_hdr), 2, 0 };
 
-        avail[2] = 0; avail[3] = 1;
-        barrier();
-        avail[1] = 1;
-        barrier();
-        R(base, gpu_notify_off) = 0;
+        GPU_CMD(RESOURCE_ATTACH_BACKING, ab_size, sizeof(struct gpu_resp_hdr));
 
-        u16 target = used[1] + 1;
-        for (u32 spins = 0; spins < 2000000; ++spins) {
-            barrier();
-            if (used[1] == target) break;
+        struct gpu_resp_hdr *resp = (struct gpu_resp_hdr *)resp_buf;
+        if (resp->type != GPU_RESP_OK_NODATA) {
+            uart_puts("virtio-gpu: RESOURCE_ATTACH_BACKING failed\r\n");
+            return -1;
         }
+        uart_puts("virtio-gpu: RESOURCE_ATTACH_BACKING done\r\n");
     }
 
-    /* --- 4. RESOURCE_SET_SCANOUT --- */
+    /* --- 4. TRANSFER_TO_HOST_2D (copy pixels to GPU) --- */
     {
-        struct gpu_ctrl_hdr *ch = (struct gpu_ctrl_hdr *)gpu_cmd_buf;
-        gpu_hdr_init(ch, GPU_CMD_RESOURCE_SET_SCANOUT);
-        struct gpu_resource_set_scanout *ss = (struct gpu_resource_set_scanout *)gpu_cmd_buf;
-        ss->rect.x = 0;
-        ss->rect.y = 0;
-        ss->rect.width = width;
-        ss->rect.height = height;
-        ss->scanout_id = 0;
-        ss->resource_id = 1;
-
-        d[0] = (struct desc){ (u64)gpu_cmd_buf, sizeof(struct gpu_resource_set_scanout), 1, 1 };
-        d[1] = (struct desc){ (u64)gpu_resp_buf, sizeof(struct gpu_resp_hdr), 2, 0 };
-
-        avail[2] = 0; avail[3] = 1;
-        barrier();
-        avail[1] = 1;
-        barrier();
-        R(base, gpu_notify_off) = 0;
-
-        avail[2] = 0; avail[3] = 1;
-        barrier();
-        avail[1] = 1;
-        barrier();
-        R(base, gpu_notify_off) = 0;
-
-        u16 target = used[1] + 1;
-        for (u32 spins = 0; spins < 2000000; ++spins) {
-            barrier();
-            if (used[1] == target) break;
-        }
-    }
-
-    /* --- 5. TRANSFER_TO_HOST_2D (copy pixels to GPU) --- */
-    {
-        struct gpu_ctrl_hdr *ch = (struct gpu_ctrl_hdr *)gpu_cmd_buf;
+        struct gpu_ctrl_hdr *ch = (struct gpu_ctrl_hdr *)cmd_buf;
         gpu_hdr_init(ch, GPU_CMD_TRANSFER_TO_HOST_2D);
-        struct gpu_transfer_to_host_2d *t = (struct gpu_transfer_to_host_2d *)gpu_cmd_buf;
+        struct gpu_transfer_to_host_2d *t = (struct gpu_transfer_to_host_2d *)cmd_buf;
         t->r.x = 0;
         t->r.y = 0;
         t->r.width = width;
@@ -567,28 +568,49 @@ int virtio_gpu_display(void) {
         t->resource_id = 1;
         t->padding = 0;
 
-        d[0] = (struct desc){ (u64)gpu_cmd_buf, sizeof(struct gpu_transfer_to_host_2d), 1, 1 };
-        d[1] = (struct desc){ (u64)gpu_resp_buf, sizeof(struct gpu_resp_hdr), 2, 0 };
+        d[0] = (struct desc){ cmd_pa, sizeof(struct gpu_transfer_to_host_2d), 1, 1 };
+        d[1] = (struct desc){ resp_pa, sizeof(struct gpu_resp_hdr), 2, 0 };
 
-        avail[2] = 0; avail[3] = 1;
-        barrier();
-        avail[1] = 1;
-        barrier();
-        R(base, gpu_notify_off) = 0;
+        GPU_CMD(TRANSFER_TO_HOST_2D, sizeof(struct gpu_transfer_to_host_2d), sizeof(struct gpu_resp_hdr));
 
-        u16 target = used[1] + 1;
-        for (u32 spins = 0; spins < 2000000; ++spins) {
-            barrier();
-            if (used[1] == target) break;
+        struct gpu_resp_hdr *resp = (struct gpu_resp_hdr *)resp_buf;
+        if (resp->type != GPU_RESP_OK_NODATA) {
+            uart_puts("virtio-gpu: TRANSFER_TO_HOST_2D failed\r\n");
+            return -1;
         }
         uart_puts("virtio-gpu: TRANSFER_TO_HOST_2D done\r\n");
     }
 
+    /* --- 5. RESOURCE_SET_SCANOUT --- */
+    {
+        struct gpu_ctrl_hdr *ch = (struct gpu_ctrl_hdr *)cmd_buf;
+        gpu_hdr_init(ch, GPU_CMD_RESOURCE_SET_SCANOUT);
+        struct gpu_resource_set_scanout *ss = (struct gpu_resource_set_scanout *)cmd_buf;
+        ss->rect.x = 0;
+        ss->rect.y = 0;
+        ss->rect.width = width;
+        ss->rect.height = height;
+        ss->scanout_id = 0;
+        ss->resource_id = 1;
+
+        d[0] = (struct desc){ cmd_pa, sizeof(struct gpu_resource_set_scanout), 1, 1 };
+        d[1] = (struct desc){ resp_pa, sizeof(struct gpu_resp_hdr), 2, 0 };
+
+        GPU_CMD(RESOURCE_SET_SCANOUT, sizeof(struct gpu_resource_set_scanout), sizeof(struct gpu_resp_hdr));
+
+        struct gpu_resp_hdr *resp = (struct gpu_resp_hdr *)resp_buf;
+        if (resp->type != GPU_RESP_OK_NODATA) {
+            uart_puts("virtio-gpu: RESOURCE_SET_SCANOUT failed\r\n");
+            return -1;
+        }
+        uart_puts("virtio-gpu: RESOURCE_SET_SCANOUT done\r\n");
+    }
+
     /* --- 6. RESOURCE_FLUSH --- */
     {
-        struct gpu_ctrl_hdr *ch = (struct gpu_ctrl_hdr *)gpu_cmd_buf;
+        struct gpu_ctrl_hdr *ch = (struct gpu_ctrl_hdr *)cmd_buf;
         gpu_hdr_init(ch, GPU_CMD_RESOURCE_FLUSH);
-        struct gpu_resource_flush *fl = (struct gpu_resource_flush *)gpu_cmd_buf;
+        struct gpu_resource_flush *fl = (struct gpu_resource_flush *)cmd_buf;
         fl->rect.x = 0;
         fl->rect.y = 0;
         fl->rect.width = width;
@@ -596,21 +618,20 @@ int virtio_gpu_display(void) {
         fl->resource_id = 1;
         fl->padding = 0;
 
-        d[0] = (struct desc){ (u64)gpu_cmd_buf, sizeof(struct gpu_resource_flush), 1, 1 };
-        d[1] = (struct desc){ (u64)gpu_resp_buf, sizeof(struct gpu_resp_hdr), 2, 0 };
+        d[0] = (struct desc){ cmd_pa, sizeof(struct gpu_resource_flush), 1, 1 };
+        d[1] = (struct desc){ resp_pa, sizeof(struct gpu_resp_hdr), 2, 0 };
 
-        avail[2] = 0; avail[3] = 1;
-        barrier();
-        avail[1] = 1;
-        barrier();
-        R(base, gpu_notify_off) = 0;
+        GPU_CMD(RESOURCE_FLUSH, sizeof(struct gpu_resource_flush), sizeof(struct gpu_resp_hdr));
 
-        u16 target = used[1] + 1;
-        for (u32 spins = 0; spins < 2000000; ++spins) {
-            barrier();
-            if (used[1] == target) break;
+        struct gpu_resp_hdr *resp = (struct gpu_resp_hdr *)resp_buf;
+        if (resp->type != GPU_RESP_OK_NODATA) {
+            uart_puts("virtio-gpu: RESOURCE_FLUSH failed\r\n");
+            return -1;
         }
+        uart_puts("virtio-gpu: RESOURCE_FLUSH done\r\n");
     }
+
+    #undef GPU_CMD
 
     uart_puts("virtio-gpu: framebuffer displayed on scanout 0\r\n");
     return 0;
