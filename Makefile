@@ -35,7 +35,16 @@ run: mycelius.bin disk
 	$(QEMU) $(QEMU_COMMON) -nographic -drive if=none,file=mycelius.img,format=raw,id=blk0 -device virtio-blk-device,drive=blk0
 
 run-gui: mycelius.bin disk
-	$(QEMU) $(QEMU_COMMON) -m 16M -display $(QEMU_DISPLAY) -serial mon:stdio -serial vc -drive if=none,file=mycelius.img,format=raw,id=blk0 -device virtio-blk-device,drive=blk0 -device virtio-gpu-device
+	$(QEMU) $(QEMU_COMMON) -m 64M -display $(QEMU_DISPLAY) -serial mon:stdio -serial vc -drive if=none,file=mycelius.img,format=raw,id=blk0 -device virtio-blk-device,drive=blk0 -device virtio-gpu-device
+
+run-gui-1: mycelius.bin disk
+	$(QEMU) $(QEMU_COMMON) -m 64M -display $(QEMU_DISPLAY) -serial mon:stdio -serial vc -drive if=none,file=mycelius.img,format=raw,id=blk0 -device virtio-blk-device,drive=blk0 -device virtio-gpu-device -vga none
+
+run-gui-2: mycelius.bin disk
+	$(QEMU) $(QEMU_COMMON) -m 64M -display $(QEMU_DISPLAY) -serial mon:stdio -serial vc -drive if=none,file=mycelius.img,format=raw,id=blk0 -device virtio-blk-device,drive=blk0 -device virtio-gpu-pci
+
+run-gui-3: mycelius.bin disk
+	$(QEMU) $(QEMU_COMMON) -m 128M -display $(QEMU_DISPLAY) -serial mon:stdio -serial vc -drive if=none,file=mycelius.img,format=raw,id=blk0 -device virtio-blk-device,drive=blk0 -device virtio-gpu-device
 
 disk:
 	@test -e mycelius.img || qemu-img create -f raw mycelius.img 8M
@@ -53,4 +62,4 @@ clean:
 	rm -f $(OBJS) mycelius.elf mycelius.bin
 	$(MAKE) -C userspace clean
 
-.PHONY: all run run-gui run-disk disk format-disk size clean userspace
+.PHONY: all run run-gui run-gui-1 run-gui-2 run-gui-3 run-disk disk format-disk size clean userspace
