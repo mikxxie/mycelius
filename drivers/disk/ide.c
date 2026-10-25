@@ -116,7 +116,6 @@ void ide_init(void) {
 
 int ide_read(u64 lba, void *buf, u32 sectors) {
     u16 *buf16 = (u16 *)buf;
-    u32 total_words = sectors * 256;
 
     /* Select drive and LBA */
     outb(IDE_DH, IDE_DH_MASTER | ((u8)((lba >> 24) & 0x0F)));
@@ -124,34 +123,6 @@ int ide_read(u64 lba, void *buf, u32 sectors) {
 
     outb(IDE_FEATURES, 0);
     outb(IDE_SECCNT, (u8)sectors);
-    outb(IDE_SECNUM, (u8)lba);
-    outb(IDE_CYLLOW, (u8)(lba >> 8));
-    outb(IDE_CYLHIGH, (u8)(lba >> 16));
-    outb(IDE_CMD, IDE_CMD_READ);
-
-    for (u32 s = 0; s < sectors; s++) {
-        if (ide_wait_drq() != 0) return -1;
-        for (int i = 0; i < 256; i++) {
-            buf16[s * 256 + i] = inb(IDE_DATA) | (inb(IDE_DATA) << 8);
-        }
-    }
-
-    return 0;
-}
-
-int ide_write(u64 lba, const void *buf, u32 sectors) {
-    u16 *buf16 = (u16 *)buf;
-
-    /* Select drive and LBA */
-    outb(IDE_DH, IDE_DH_MASTER | ((u8)((lba >> 24) & 0x0F)));
-    wait_400ns();
-
-    outb(IDE_FEATURES, 0);
-    outb(IDE_SECCNT, (u8)sectors);
-    outb(IDE_SECNUM, (u8)lba);
-    outb(IDE_CYLLOW, (u8)(lba >> 8));
-    outb(IDE_CYLHIGH, (u8)(lba >> 16));
-    outb(IDE_CMD, IDE_CMD_WRITE);
 
     for (u32 s = 0; s < sectors; s++) {
         if (ide_wait_drq() != 0) return -1;

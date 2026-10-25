@@ -79,8 +79,6 @@ static u16 e1000_tx_head = 0;
 #define E1000_RING_SIZE 8
 
 void e1000_init(void) {
-    u32 val;
-
     /* Software reset */
     e1000_regs[E1000_CTRL / 4] = E1000_CTRL_RST;
     for (volatile int i = 0; i < 10000; i++) {}
@@ -122,7 +120,6 @@ void e1000_init(void) {
 }
 
 void e1000_poll(void) {
-    u32 status = e1000_regs[E1000_STATUS / 4];
     u32 icr = e1000_regs[E1000_ICR / 4]; /* Read and clear interrupts */
 
     if (icr & (1u << 0)) { /* RX interrupt */
@@ -151,7 +148,7 @@ int e1000_send(const void *data, u32 len) {
     if (e1000_tx_ring[e1000_tx_head].status & E1000_DESC_DD) {
         return -1; /* Ring full */
     }
-    e1000_tx_ring[e1000_tx_head].addr = (u64)(u32)data;
+    e1000_tx_ring[e1000_tx_head].addr = (u64)data;
     e1000_tx_ring[e1000_tx_head].length = len;
     e1000_tx_ring[e1000_tx_head].status = E1000_DESC_EOP;
     e1000_regs[E1000_TDT / 4] = (e1000_tx_head + 1) % E1000_RING_SIZE;
