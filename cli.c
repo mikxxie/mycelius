@@ -211,7 +211,14 @@ static void execute(void) {
         }
         /* The actual Ctrl+S/Ctrl+X handling is in cli_poll() */
     }
-    else if (same(line, "gui")) gui_demo();
+    else if (same(line, "gui")) {
+        uart_puts("gui: running GUI demo...\r\n");
+        gui_demo();
+        uart_puts("gui: framebuffer demo drawn\r\n");
+        uart_puts("gui: calling virtio_gpu_display()...\r\n");
+        virtio_gpu_display();
+        uart_puts("gui: done\r\n");
+    }
     else if (line[0]) uart_puts("unknown command\r\n");
 }
 

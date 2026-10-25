@@ -131,9 +131,7 @@ void kernel_after_user(void) {
         } else {
             uart_puts("mycelius: ext4 mount failed\r\n");
         }
-        gui_demo();
-        virtio_gpu_display();
-        uart_puts("mycelius> type 'help'\r\nmycelius> ");
+        uart_puts("mycelius> type 'gui' to start GUI, 'help' for help\r\nmycelius> ");
         for (;;) { driver_supervise(); net_poll(); cli_poll(); }
     }
 }
