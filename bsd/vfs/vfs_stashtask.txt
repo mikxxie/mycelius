@@ -1,1 +1,0 @@
-Changes to VFS should go through the file system presubmission testing sidebuild.

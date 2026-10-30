@@ -1,7 +1,0 @@
-module skywalk [system] {
-  umbrella "."
-
-  module * {
-    export *
-  }
-}
