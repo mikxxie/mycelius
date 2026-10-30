@@ -41,27 +41,26 @@ jobs:
       - name: Clone FreeBSD src (--depth=1) for real aarch64 headers/libs
         run: |
           git clone --depth=1 https://github.com/freebsd/freebsd-src.git /tmp/freebsd-src
-          ls /tmp/freebsd-src/usr/include | head
           echo "FREEBSD_SRC=/tmp/freebsd-src" >> $GITHUB_ENV
 
       - name: Cross-compile for aarch64-unknown-freebsd (clang-18/lld-18)
         env:
-          FREEBSD_SRC: /tmp/freebsd-src
+          # Complete repo-local sysroot stubs for FreeBSD userland headers.
+          SYSROOT: ${{ github.workspace }}/sysroot
         run: |
-          SYSROOT="$FREEBSD_SRC/usr/include"
           echo "=== backboardd ==="
           clang-18 -target aarch64-unknown-freebsd --sysroot="$SYSROOT" \
-            -I"$SYSROOT" -I../include \
+            -I"$SYSROOT/usr/include" -I../include \
             -O2 -Wall -Wextra -std=c11 \
             -c usr.sbin/backboardd/backboardd.c -o /tmp/backboardd.aarch64.o
           file /tmp/backboardd.aarch64.o | grep -q aarch64
           echo "=== launchpad ==="
           clang-18 -target aarch64-unknown-freebsd --sysroot="$SYSROOT" \
-            -I"$SYSROOT" -I../include \
+            -I"$SYSROOT/usr/include" -I../include \
             -O2 -Wall -Wextra -std=c11 \
             -c usr.sbin/launchpad/launchpad.c -o /tmp/launchpad.aarch64.o
           clang-18 -target aarch64-unknown-freebsd --sysroot="$SYSROOT" \
-            -I"$SYSROOT" -I../include \
+            -I"$SYSROOT/usr/include" -I../include \
             -O2 -Wall -Wextra -std=c11 \
             -c usr.sbin/launchpad/render.c -o /tmp/render.aarch64.o
           file /tmp/launchpad.aarch64.o /tmp/render.aarch64.o | grep -q aarch64

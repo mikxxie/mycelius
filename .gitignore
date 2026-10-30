@@ -1,0 +1,8 @@
+# FreeBSD source tree (cloned locally --depth=1, not committed)
+freebsd-src/
+
+# Build artifacts
+usr.sbin/backboardd/backboardd
+usr.sbin/launchpad/launchpad
+*.o
+*.ppm
