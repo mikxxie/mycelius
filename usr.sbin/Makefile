@@ -1,6 +1,7 @@
 # $mycelius$
-# usr.sbin subdirectories. winman is the base-system window manager.
+# usr.sbin subdirectories. backboardd + launchpad form the mobile UI stack.
 
-SUBDIR+=	winman
+SUBDIR+=	backboardd
+SUBDIR+=	launchpad
 
 .include <bsd.subdir.mk>

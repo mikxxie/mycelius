@@ -13,42 +13,44 @@ concurrency:
 jobs:
   build-test:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 12
     steps:
       - name: Checkout mycelius
         uses: actions/checkout@v4
 
-      - name: Install toolchain (clang-18 / lld-18) + X11 test deps
+      - name: Install toolchain (clang-18 / lld-18)
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq \
-            clang-18 lld-18 \
-            libxcb1-dev \
-            xorg xvfb xinit xterm
+          sudo apt-get install -y -qq clang-18 lld-18
 
-      - name: Build winman + launcher (native)
+      - name: Build backboardd + launchpad (native)
         run: |
-          make -C usr.sbin/winman
+          make -C usr.sbin/backboardd
+          make -C usr.sbin/launchpad
 
-      - name: Verify clang-18 cross-compiles to aarch64 (object only)
+      - name: Cross-compile check (aarch64-unknown-freebsd, clang-18/lld-18)
         run: |
-          cd usr.sbin/winman
-          clang-18 -target aarch64-unknown-freebsd -O2 -Wall -Wextra -std=c11 \
-            -c winman.c -o /tmp/winman.aarch64.o
-          clang-18 -target aarch64-unknown-freebsd -O2 -Wall -Wextra -std=c11 \
-            -c launcher.c -o /tmp/launcher.aarch64.o
-          file /tmp/winman.aarch64.o /tmp/launcher.aarch64.o
+          make -C usr.sbin/backboardd clean >/dev/null
+          make -C usr.sbin/backboardd cross CC=clang-18
+          file usr.sbin/backboardd/backboardd
+          make -C usr.sbin/backboardd clean >/dev/null
+          make -C usr.sbin/launchpad clean >/dev/null
+          make -C usr.sbin/launchpad cross CC=clang-18
+          file usr.sbin/launchpad/launchpad
 
-      - name: Smoke test under Xephyr (headless)
+      - name: Smoke test (backboardd synth -> launchpad render -> PPM frame)
         run: |
-          Xephyr :99 -screen 800x600 -ac &
-          XPID=$!
-          sleep 2
-          DISPLAY=:99 ./usr.sbin/winman/winman &
-          WMPID=$!
-          sleep 1
-          DISPLAY=:99 ./usr.sbin/winman/launcher &
+          make -C usr.sbin/backboardd
+          make -C usr.sbin/launchpad
+          rm -f /tmp/lp_bb.sock /tmp/lp_frame.ppm
+          ./usr.sbin/backboardd/backboardd -s /tmp/lp_bb.sock >/tmp/bb.log 2>&1 &
+          BBPID=$!
+          sleep 0.5
+          ./usr.sbin/launchpad/launchpad -b /tmp/lp_bb.sock -o /tmp/lp_frame.ppm >/tmp/lp.log 2>&1 &
           LPPID=$!
           sleep 3
-          kill $LPPID $WMPID $XPID 2>/dev/null || true
-          wait $XPID 2>/dev/null || true
+          kill $LPPID $BBPID 2>/dev/null || true
+          wait $BBPID 2>/dev/null || true
+          wait $LPPID 2>/dev/null || true
+          test -s /tmp/lp_frame.ppm
+          file /tmp/lp_frame.ppm | grep -q "480 x 800"
