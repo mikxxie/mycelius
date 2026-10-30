@@ -13,30 +13,40 @@ concurrency:
 jobs:
   build-test:
     runs-on: ubuntu-24.04
-    timeout-minutes: 12
+    timeout-minutes: 15
     steps:
       - name: Checkout mycelius
         uses: actions/checkout@v4
 
-      - name: Install toolchain (clang-18 / lld-18)
+      - name: Install toolchain (clang-18 / lld-18) + ccache
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq clang-18 lld-18
+          sudo apt-get install -y -qq clang-18 lld-18 ccache
 
-      - name: Build backboardd + launchpad (native)
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ${{ runner.os }}-ccache-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-
+
+      - name: Build backboardd + launchpad (native, ccache)
+        env:
+          CC: ccache cc
         run: |
-          make -C usr.sbin/backboardd
-          make -C usr.sbin/launchpad
+          CC="ccache cc" make -C usr.sbin/backboardd
+          CC="ccache cc" make -C usr.sbin/launchpad
 
-      - name: Cross-compile check (aarch64-unknown-freebsd, clang-18/lld-18)
+      - name: Cross-compile for aarch64-unknown-freebsd (clang-18/lld-18)
         run: |
           make -C usr.sbin/backboardd clean >/dev/null
           make -C usr.sbin/backboardd cross CC=clang-18
-          file usr.sbin/backboardd/backboardd
+          file usr.sbin/backboardd/backboardd | grep -q "ARM aarch64"
           make -C usr.sbin/backboardd clean >/dev/null
           make -C usr.sbin/launchpad clean >/dev/null
           make -C usr.sbin/launchpad cross CC=clang-18
-          file usr.sbin/launchpad/launchpad
+          file usr.sbin/launchpad/launchpad | grep -q "ARM aarch64"
 
       - name: Smoke test (backboardd synth -> launchpad render -> PPM frame)
         run: |
@@ -54,3 +64,13 @@ jobs:
           wait $LPPID 2>/dev/null || true
           test -s /tmp/lp_frame.ppm
           file /tmp/lp_frame.ppm | grep -q "480 x 800"
+
+      - name: Upload artifacts (binaries + rendered frame)
+        uses: actions/upload-artifact@v4
+        with:
+          name: mycelius-ui-binaries
+          path: |
+            usr.sbin/backboardd/backboardd
+            usr.sbin/launchpad/launchpad
+            /tmp/lp_frame.ppm
+          retention-days: 7
