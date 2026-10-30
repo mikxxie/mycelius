@@ -1,0 +1,56 @@
+.\" SPDX-License-Identifier: CDDL-1.0
+.\"
+.\" This file and its contents are supplied under the terms of the
+.\" Common Development and Distribution License ("CDDL"), version 1.0.
+.\" You may only use this file in accordance with the terms of version
+.\" 1.0 of the CDDL.
+.\"
+.\" A full copy of the text of the CDDL should have accompanied this
+.\" source.  A copy of the CDDL is also available via the Internet at
+.\" https://opensource.org/license/CDDL-1.0.
+.\"
+.\" Copyright (c) 2007, Sun Microsystems, Inc. All Rights Reserved.
+.\" Copyright (c) 2012, 2018 by Delphix. All rights reserved.
+.\" Copyright (c) 2012 Cyril Plisko. All Rights Reserved.
+.\" Copyright (c) 2017 Datto Inc.
+.\" Copyright (c) 2018 George Melikov. All Rights Reserved.
+.\" Copyright 2017 Nexenta Systems, Inc.
+.\" Copyright (c) 2017 Open-E, Inc. All Rights Reserved.
+.\"
+.Dd July 11, 2022
+.Dt ZFS-WAIT 8
+.Os
+.
+.Sh NAME
+.Nm zfs-wait
+.Nd wait for activity in ZFS filesystem to stop
+.Sh SYNOPSIS
+.Nm zfs
+.Cm wait
+.Op Fl t Ar activity Ns Oo , Ns Ar activity Ns Oc Ns …
+.Ar filesystem
+.
+.Sh DESCRIPTION
+Waits until all background activity of the given types has ceased in the given
+filesystem.
+The activity could cease because it has completed or because the filesystem has
+been destroyed or unmounted.
+If no activities are specified, the command waits until background activity of
+every type listed below has ceased.
+If there is no activity of the given types in progress, the command returns
+immediately.
+.Pp
+These are the possible values for
+.Ar activity ,
+along with what each one waits for:
+.Bl -tag -compact -offset Ds -width "deleteq"
+.It Sy deleteq
+The filesystem's internal delete queue to empty
+.El
+.Pp
+Note that the internal delete queue does not finish draining until
+all large files have had time to be fully destroyed and all open file
+handles to unlinked files are closed.
+.
+.Sh SEE ALSO
+.Xr lsof 8

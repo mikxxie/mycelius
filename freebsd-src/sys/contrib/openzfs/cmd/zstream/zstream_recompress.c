@@ -1,0 +1,419 @@
+// SPDX-License-Identifier: CDDL-1.0
+/*
+ * This file and its contents are supplied under the terms of the
+ * Common Development and Distribution License ("CDDL"), version 1.0.
+ * You may only use this file in accordance with the terms of version
+ * 1.0 of the CDDL.
+ *
+ * A full copy of the text of the CDDL should have accompanied this
+ * source.  A copy of the CDDL is also available via the Internet at
+ * https://opensource.org/license/CDDL-1.0.
+ */
+
+/*
+ * Copyright 2022 Axcient.  All rights reserved.
+ * Use is subject to license terms.
+ *
+ * Copyright (c) 2022 by Delphix. All rights reserved.
+ * Copyright (c) 2024, Klara, Inc.
+ * Copyright (c) 2026 by Garth Snyder
+ */
+
+#include <assert.h>
+#include <err.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/dmu.h>
+#include <sys/zfs_ioctl.h>
+#include <sys/zio_compress.h>
+#include <sys/zstd/zstd.h>
+#include <unistd.h>
+#include <sys/stdtypes.h>
+
+#include "zstream.h"
+#include "zstream_modules.h"
+#include "zstream_queue.h"
+#include "zstream_recompress.h"
+#include "zstream_util.h"
+
+#define	MAX_COMPRESSION_STEPS 4
+
+static compression_spec_t	specs[MAX_COMPRESSION_STEPS];
+static int			next_spec = 0;
+
+/*
+ * Item is known to be a DRR_WRITE packet. Determine whether current
+ * compression is compatible with desired compression and whether the
+ * current record is modifiable at all.
+ */
+static boolean_t
+needs_modification(drr_packet_t *item, compression_spec_t *target)
+{
+	dmu_replay_record_t *drr = &item->dp_drr;
+	struct drr_write *drrw	 = &drr->drr_u.drr_write;
+	enum zio_compress ctype  = drrw->drr_compressiontype;
+	uint8_t cur_level;
+
+	/*
+	 * Do not modify metadata records. It's a general stream invariant
+	 * that metadata is never compressed. See comments at
+	 * dmu_receive.c:flush_write_batch_impl().
+	 */
+	if (DMU_OT_IS_METADATA(drrw->drr_type)) {
+		return (B_FALSE);
+	}
+	boolean_t ctype_uncompressed = ctype_is_uncompressed(ctype);
+	if (target == NULL) {
+		return (!ctype_uncompressed && !write_is_encrypted(drrw));
+	}
+	boolean_t target_uncompressed = ctype_is_uncompressed(target->cs_type);
+	if (target_uncompressed && ctype_uncompressed) {
+		return (B_FALSE);
+	}
+	/*
+	 * In order to recompress an encrypted block, you have to decrypt,
+	 * decompress, recompress, and re-encrypt. That can be a future
+	 * enhancement (along with decryption or re-encryption), but for now
+	 * we skip encrypted blocks.
+	 */
+	if (write_is_encrypted(drrw)) {
+		return (B_FALSE);
+	}
+	if (ctype != target->cs_type) {
+		return (B_TRUE);
+	}
+	if (target->cs_type == ZIO_COMPRESS_ZSTD) {
+		cur_level = zfs_get_hdrlevel((void *)item->dp_payload);
+		if (target->cs_level == ZIO_COMPLEVEL_DEFAULT) {
+			return (cur_level != ZIO_ZSTD_LEVEL_DEFAULT);
+		}
+		return (target->cs_level != cur_level);
+	}
+	return (B_FALSE);
+}
+
+static boolean_t
+needs_compression(drr_packet_t *item, compression_spec_t *context)
+{
+	return (needs_modification(item, context));
+}
+
+/*
+ * Don't decompress packets that aren't compressed. And don't decompress
+ * them if their ultimate fate is to be recompressed using the compression
+ * profile that's already in use.
+ */
+static boolean_t
+needs_decompression(drr_packet_t *item, compression_spec_t *context)
+{
+	dmu_replay_record_t *drr = &item->dp_drr;
+	struct drr_write *drrw	 = &drr->drr_u.drr_write;
+	enum zio_compress ctype	 = drrw->drr_compressiontype;
+
+	if (ctype_is_uncompressed(ctype))
+		return (B_FALSE);
+	return (needs_modification(item, context));
+}
+
+/*
+ * We can ignore the context here because it's already been evaluated by the
+ * cost function. If the cost function returned something other than zero,
+ * we have to decompress.
+ */
+static void
+chain_decompress_writes(queue_item_t *item_in, void *context)
+{
+	(void) context;
+	drr_packet_t *item = (drr_packet_t *)item_in;
+
+	dmu_replay_record_t *drr = &item->dp_drr;
+	struct drr_write *drrw	= &drr->drr_u.drr_write;
+	uint8_t *debuff;
+
+	VERIFY3U(drr->drr_type, ==, DRR_WRITE);
+	debuff = decompress_buffer(item->dp_payload, item->dp_payload_size,
+	    drrw->drr_logical_size, drrw->drr_compressiontype);
+	if (debuff == NULL) {
+		errx(4, "decompression type %d failed for ino %llu offset %llu",
+		    drrw->drr_compressiontype,
+		    (u_longlong_t)drrw->drr_object,
+		    (u_longlong_t)drrw->drr_offset);
+	}
+	set_payload(item, debuff, drrw->drr_logical_size);
+	drrw->drr_compressed_size = 0;
+	drrw->drr_compressiontype = 0;
+}
+
+/*
+ * As with chain_decompress_writes(), all the important decisions were made
+ * by the cost function. If we're here, we need to compress.
+ */
+static void
+chain_compress_writes(queue_item_t *item_in, void *context_in)
+{
+	drr_packet_t *item = (drr_packet_t *)item_in;
+	compression_spec_t *context = (compression_spec_t *)context_in;
+
+	dmu_replay_record_t *drr = &item->dp_drr;
+
+	struct drr_write *drrw = &drr->drr_u.drr_write;
+	enum zio_compress ctype = drrw->drr_compressiontype;
+	uint8_t *cbuff;
+	size_t	csize;
+
+	VERIFY3U(drr->drr_type, ==, DRR_WRITE);
+	VERIFY3B(ctype_is_uncompressed(ctype), ==, B_TRUE);
+	cbuff = compress_buffer(item->dp_payload, item->dp_payload_size,
+	    *context, &csize);
+
+	if (cbuff == NULL) {
+		drrw->drr_compressiontype = 0;
+		drrw->drr_compressed_size = 0;
+	} else {
+		set_payload(item, cbuff, csize);
+		drrw->drr_compressed_size = csize;
+		drrw->drr_compressiontype = context->cs_type;
+	}
+}
+
+/*
+ * A cost of zero waives processing for the current item, so the following
+ * two functions are mostly determining which packets need attention. A
+ * packet that's already compressed with the target compression profile can
+ * be ignored.
+ *
+ * When a packet does need work, the cost is the number of bytes the
+ * compressor or decompressor will have to process: the logical size for
+ * compression, since that's what goes in, and the stored payload size for
+ * decompression, since that's what comes out.
+ */
+static size_t
+chain_compress_cost(queue_item_t *item_in, void *context_in)
+{
+	compression_spec_t *context = (compression_spec_t *)context_in;
+	drr_packet_t *item = (drr_packet_t *)item_in;
+	dmu_replay_record_t *drr = &item->dp_drr;
+
+	if (drr->drr_type != DRR_WRITE) {
+		return (0);
+	}
+	struct drr_write *drrw = &drr->drr_u.drr_write;
+	return (needs_compression(item, context) ? drrw->drr_logical_size : 0);
+}
+
+/*
+ * Don't decompress packets that aren't compressed. And don't decompress
+ * them if their ultimate fate is to be recompressed using the compression
+ * profile that's already in use.
+ */
+static size_t
+chain_decompress_cost(queue_item_t *item_in, void *context_in)
+{
+	compression_spec_t *context = (compression_spec_t *)context_in;
+	drr_packet_t *item = (drr_packet_t *)item_in;
+	dmu_replay_record_t *drr = &item->dp_drr;
+
+	if (drr->drr_type != DRR_WRITE)
+		return (0);
+
+	struct drr_write *drrw   = &drr->drr_u.drr_write;
+	enum zio_compress ctype  = drrw->drr_compressiontype;
+
+	if (ctype_is_uncompressed(ctype))
+		return (0);
+
+	return (needs_decompression(item, context) ? item->dp_payload_size : 0);
+}
+
+/*
+ * Decompress writes, but only if they don't match a target compression
+ * type. Pass NULL to uncompress unconditionally (if not already
+ * uncompressed).
+ */
+chain_step_t
+parallel_decompress_writes(compression_spec_t *target)
+{
+	int this_spec = next_spec++ % MAX_COMPRESSION_STEPS;
+	compression_spec_t *context = &specs[this_spec];
+
+	if (target == NULL) {
+		context = NULL;
+	} else {
+		*context = *target;
+	}
+	chain_step_t step = {
+	    .cs_type = CS_PARALLEL,
+	    .cs_in_size = sizeof (drr_packet_t),
+	    .cs_out_size = sizeof (drr_packet_t),
+	    .cs_context = context,
+	    .cs_parallel = {
+		.process = chain_decompress_writes,
+		.cost = chain_decompress_cost
+	    }
+	};
+	return (step);
+}
+
+chain_step_t
+parallel_compress_writes(compression_spec_t *target)
+{
+	int this_spec = next_spec++ % MAX_COMPRESSION_STEPS;
+	compression_spec_t *context = &specs[this_spec];
+
+	VERIFY3P(target, !=, NULL);
+	*context = *target;
+
+	chain_step_t step = {
+	    .cs_type = CS_PARALLEL,
+	    .cs_in_size = sizeof (drr_packet_t),
+	    .cs_out_size = sizeof (drr_packet_t),
+	    .cs_context = context,
+	    .cs_parallel = {
+		.process = chain_compress_writes,
+		.cost = chain_compress_cost
+	    }
+	};
+	return (step);
+}
+
+/*
+ * Keep DRR_BEGIN feature flags consistent with the WRITE payloads we emit.
+ * Compressed WRITEs require DMU_BACKUP_FEATURE_COMPRESSED (and LZ4/ZSTD as
+ * appropriate).  Recompressing to off clears COMPRESSED for non-raw streams;
+ * raw streams may retain encrypted compressed WRITEs that recompress skips.
+ * LZ4/ZSTD are cleared only when neither EMBED_DATA nor RAW remains, since
+ * recompress does not rewrite those record types.
+ */
+static disposition_t
+chain_update_compress_features(void *item_in, void *context_in)
+{
+	drr_packet_t *item = (drr_packet_t *)item_in;
+	compression_spec_t *spec = (compression_spec_t *)context_in;
+	struct drr_begin *drrb;
+	uint64_t flags;
+
+	if (item == NULL)
+		return (D_OK);
+
+	if (item->dp_drr.drr_type != DRR_BEGIN)
+		return (D_OK);
+
+	drrb = &item->dp_drr.drr_u.drr_begin;
+	flags = DMU_GET_FEATUREFLAGS(drrb->drr_versioninfo);
+
+	if (ctype_is_uncompressed(spec->cs_type)) {
+		if (!(flags & DMU_BACKUP_FEATURE_RAW))
+			flags &= ~DMU_BACKUP_FEATURE_COMPRESSED;
+		if ((flags & (DMU_BACKUP_FEATURE_EMBED_DATA |
+		    DMU_BACKUP_FEATURE_RAW)) == 0) {
+			flags &= ~(DMU_BACKUP_FEATURE_LZ4 |
+			    DMU_BACKUP_FEATURE_ZSTD);
+		}
+	} else {
+		flags |= DMU_BACKUP_FEATURE_COMPRESSED;
+		if (spec->cs_type == ZIO_COMPRESS_ZSTD) {
+			flags |= DMU_BACKUP_FEATURE_ZSTD;
+		} else if (spec->cs_type >= ZIO_COMPRESS_LZ4) {
+			flags |= DMU_BACKUP_FEATURE_LZ4;
+		}
+	}
+
+	DMU_SET_FEATUREFLAGS(drrb->drr_versioninfo, flags);
+	return (D_OK);
+}
+
+static chain_step_t
+serial_update_compress_features(compression_spec_t *target)
+{
+	int this_spec = next_spec++ % MAX_COMPRESSION_STEPS;
+	compression_spec_t *context = &specs[this_spec];
+
+	VERIFY3P(target, !=, NULL);
+	*context = *target;
+
+	chain_step_t step = {
+	    .cs_type = CS_SERIAL,
+	    .cs_in_size = sizeof (drr_packet_t),
+	    .cs_out_size = sizeof (drr_packet_t),
+	    .cs_context = context,
+	    .cs_serial = {
+		.process = chain_update_compress_features,
+	    }
+	};
+	return (step);
+}
+
+int
+zstream_do_recompress(int argc, char *argv[])
+{
+	int c;
+	int level = ZIO_COMPLEVEL_DEFAULT;
+	int num_threads = 0;
+	compression_spec_t spec;
+
+	chain_attrs_t attrs = { .ca_command_opts = CA_FORBID_DEDUP };
+
+	while ((c = getopt(argc, argv, "t:l:")) != -1) {
+		switch (c) {
+		case 'l':
+			if (sscanf(optarg, "%d", &level) != 1) {
+				warnx("failed to parse level '%s'", optarg);
+				zstream_usage();
+			}
+			break;
+		case 't':
+			if (sscanf(optarg, "%d", &num_threads) != 1) {
+				warnx("failed to parse number of threads '%s'",
+				    optarg);
+				zstream_usage();
+			}
+			zstream_queue_set_num_threads(num_threads);
+			break;
+		case '?':
+			warnx("invalid option '%c'", optopt);
+			zstream_usage();
+		}
+	}
+
+	argc -= optind;
+	argv += optind;
+
+	if (argc < 1 || argc > 2)
+		zstream_usage();
+
+	if (parse_compression_specifier(argv[0], &spec) != 0)
+		errx(1, "invalid compression type '%s'", argv[0]);
+	release_libzfs();
+
+	boolean_t is_off = spec.cs_type == ZIO_COMPRESS_OFF;
+	boolean_t is_uncompressed = ctype_is_uncompressed(spec.cs_type);
+	if (is_uncompressed && !is_off)
+		errx(1, "invalid compression type '%s'; use 'off'", argv[0]);
+
+	if (level != ZIO_COMPLEVEL_DEFAULT) {
+		if (spec.cs_type != ZIO_COMPRESS_ZSTD) {
+			errx(1, "use -l only with compression type 'zstd'");
+		} else if (spec.cs_level != ZIO_COMPLEVEL_DEFAULT &&
+		    spec.cs_level != level) {
+			errx(1, "conflicting compression levels -l %d "
+			    "vs. zstd-%d", level, spec.cs_level);
+		} else {
+			warnx("-l is deprecated; use a composite specifier "
+			    "such as zstd-%d", level);
+		}
+		spec.cs_level = level;
+	}
+
+	zstream_chain_t recompress_chain = {
+		STANDARD_INPUT_STACK((argc == 2) ? argv[1] : NULL),
+		parallel_decompress_writes(&spec),
+		parallel_compress_writes(&spec),
+		serial_update_compress_features(&spec),
+		STANDARD_OUTPUT_STACK(NULL)
+	};
+
+	zstream_chain_exec(recompress_chain, &attrs);
+	return (0);
+}

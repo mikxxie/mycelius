@@ -1,0 +1,82 @@
+.\" LP (Laptop Package)
+.\"
+.\" Copyright (c) 1994 by Tatsumi Hosokawa <hosokawa@jp.FreeBSD.org>
+.\"
+.\" This software may be used, modified, copied, and distributed, in
+.\" both source and binary form provided that the above copyright and
+.\" these terms are retained. Under no circumstances is the author
+.\" responsible for the proper functioning of this software, nor does
+.\" the author assume any responsibility for damages incurred with its
+.\" use.
+.\"
+.Dd September 30, 2026
+.Dt APM 8 i386
+.Os
+.Sh NAME
+.Nm apm
+.Nd display power management status
+.Sh SYNOPSIS
+.Nm
+.Op Fl abltzZ
+.Sh DESCRIPTION
+The
+.Nm
+utility reports power management status.
+.Pp
+The options are as follows:
+.Bl -tag -width indent
+.It Fl a
+Display the current AC-line status as an integer value.
+The values
+0, 1 and 2 correspond to the
+.Dq off-line
+state,
+.Dq on-line
+state or
+.Dq backup power
+state, respectively.
+.It Fl b
+Display an integer value reflecting the current battery status.
+The values 0, 1, 2, 3, correspond to the
+.Dq high
+status,
+.Dq low
+status,
+.Dq critical
+status,
+.Dq charging
+status respectively.
+.It Fl l
+Display the remaining battery percentage.
+If your laptop does not
+support this function, 255 is displayed.
+.It Fl t
+Display the estimated remaining battery lifetime in seconds.
+If
+it is unknown, -1 is displayed.
+.It Fl Z
+Transition the system into standby mode.
+This mode uses less power than
+full power mode, but more than suspend mode.
+.It Fl z
+Suspend the system.
+.El
+.Pp
+If no options are specified,
+.Nm
+displays information and current status of APM in verbose mode.
+If multiple display options are given, the values are displayed one
+per line in the order given here.
+.Sh SEE ALSO
+.Xr acpi 4 ,
+.Xr apm 4 ,
+.Xr acpiconf 8 ,
+.Xr zzz 8
+.Sh HISTORY
+The
+.Nm
+utility originally controlled the Advanced Power Management (APM) BIOS
+extension on i386,
+now it interfaces with ACPI.
+.Sh AUTHORS
+.An Tatsumi Hosokawa Aq Mt hosokawa@jp.FreeBSD.org

@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: CDDL-1.0
+#
+# This file and its contents are supplied under the terms of the
+# Common Development and Distribution License ("CDDL"), version 1.0.
+# You may only use this file in accordance with the terms of version
+# 1.0 of the CDDL.
+#
+# A full copy of the text of the CDDL should have accompanied this
+# source.  A copy of the CDDL is also available via the Internet at
+# https://opensource.org/license/CDDL-1.0.
+#
+
+#
+# Copyright 2008 Sun Microsystems, Inc.  All rights reserved.
+# Use is subject to license terms.
+#
+
+#
+# Copyright (c) 2013, 2016 by Delphix. All rights reserved.
+#
+
+#
+# A function to determine if a given pool name has an entry in cachefile
+# returns 1 if the pool is not in the cache, 0 otherwise.
+function pool_in_cache {
+
+	# checking for the pool name in the strings output of
+	# the given cachefile, default is /etc/zfs/zpool.cache
+	typeset cachefile=${2:-$CPATH}
+
+	RESULT=$(strings $cachefile | grep -w $1)
+	if [ -z "$RESULT" ]
+	then
+		return 1
+	fi
+	return 0
+}

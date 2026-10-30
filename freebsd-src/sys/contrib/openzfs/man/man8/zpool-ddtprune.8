@@ -1,0 +1,39 @@
+.\" SPDX-License-Identifier: CDDL-1.0
+.\"
+.\" This file and its contents are supplied under the terms of the
+.\" Common Development and Distribution License ("CDDL"), version 1.0.
+.\" You may only use this file in accordance with the terms of version
+.\" 1.0 of the CDDL.
+.\"
+.\" A full copy of the text of the CDDL should have accompanied this
+.\" source.  A copy of the CDDL is also available via the Internet at
+.\" https://opensource.org/license/CDDL-1.0.
+.\"
+.\"
+.\" Copyright (c) 2024, Klara Inc.
+.\"
+.Dd June 17, 2024
+.Dt ZPOOL-DDTPRUNE 8
+.Os
+.
+.Sh NAME
+.Nm zpool-ddtprune
+.Nd Prunes the oldest entries from the single reference dedup table(s)
+.Sh SYNOPSIS
+.Nm zpool
+.Cm ddtprune
+.Fl d Ar days | Fl p Ar percentage
+.Ar pool
+.Sh DESCRIPTION
+This command prunes older unique entries from the dedup table.
+As a complement to the dedup quota feature,
+.Sy ddtprune
+allows removal of older non-duplicate entries to make room for
+newer duplicate entries.
+.Pp
+The amount to prune can be based on a target percentage of the unique entries
+or based on the age (i.e., every unique entry older than N days).
+.
+.Sh SEE ALSO
+.Xr zdb 8 ,
+.Xr zpool-status 8

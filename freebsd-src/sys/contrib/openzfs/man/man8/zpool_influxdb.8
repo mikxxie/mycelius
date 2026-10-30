@@ -1,0 +1,89 @@
+.\" SPDX-License-Identifier: CDDL-1.0
+.\"
+.\" This file and its contents are supplied under the terms of the
+.\" Common Development and Distribution License ("CDDL"), version 1.0.
+.\" You may only use this file in accordance with the terms of version
+.\" 1.0 of the CDDL.
+.\"
+.\" A full copy of the text of the CDDL should have accompanied this
+.\" source.  A copy of the CDDL is also available via the Internet at
+.\" https://opensource.org/license/CDDL-1.0.
+.\"
+.\" Copyright 2020 Richard Elling
+.\"
+.Dd May 26, 2021
+.Dt ZPOOL_INFLUXDB 8
+.Os
+.
+.Sh NAME
+.Nm zpool_influxdb
+.Nd collect ZFS pool statistics in InfluxDB line protocol format
+.Sh SYNOPSIS
+.Nm
+.Op Fl e Ns | Ns Fl -execd
+.Op Fl n Ns | Ns Fl -no-histogram
+.Op Fl s Ns | Ns Fl -sum-histogram-buckets
+.Op Fl t Ns | Ns Fl -tags Ar key Ns = Ns Ar value Ns Oo , Ns Ar key Ns = Ns Ar value Oc Ns …
+.Op Ar pool
+.
+.Sh DESCRIPTION
+.Nm
+produces InfluxDB-line-protocol-compatible metrics from zpools.
+Like the
+.Nm zpool
+command,
+.Nm
+reads the current pool status and statistics.
+Unlike the
+.Nm zpool
+command which is intended for humans,
+.Nm
+formats the output in the InfluxDB line protocol.
+The expected use is as a plugin to a
+metrics collector or aggregator, such as Telegraf.
+.Pp
+By default,
+.Nm
+prints pool metrics and status in the InfluxDB line protocol format.
+All pools are printed, similar to the
+.Nm zpool Cm status
+command.
+Providing a pool name restricts the output to the named pool.
+.
+.Sh OPTIONS
+.Bl -tag -width "-e, --execd"
+.It Fl e , -execd
+Run in daemon mode compatible with Telegraf's
+.Nm execd
+plugin.
+In this mode, the pools are sampled every time a
+newline appears on the standard input.
+.It Fl n , -no-histogram
+Do not print latency and I/O size histograms.
+This can reduce the total
+amount of data, but one should consider the value brought by the insights
+that latency and I/O size distributions provide.
+The resulting values
+are suitable for graphing with Grafana's heatmap plugin.
+.It Fl s , -sum-histogram-buckets
+Accumulates bucket values.
+By default, the values are not accumulated and the raw data appears as shown by
+.Nm zpool Cm iostat .
+This works well for Grafana's heatmap plugin.
+Summing the buckets produces output similar to Prometheus histograms.
+.It Fl t , Fl -tags Ar key Ns = Ns Ar value Ns Oo , Ns Ar key Ns = Ns Ar value Oc Ns …
+Adds specified tags to the tag set.
+No sanity checking is performed.
+See the InfluxDB Line Protocol format documentation for details on escaping
+special characters used in tags.
+.It Fl h , -help
+Print a usage summary.
+.El
+.
+.Sh SEE ALSO
+.Xr zpool-iostat 8 ,
+.Xr zpool-status 8 ,
+.Lk https://github.com/influxdata/influxdb "InfluxDB" ,
+.Lk https://github.com/influxdata/telegraf "Telegraf" ,
+.Lk https://grafana.com "Grafana" ,
+.Lk https://prometheus.io "Prometheus"

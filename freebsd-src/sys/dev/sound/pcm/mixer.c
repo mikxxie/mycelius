@@ -1,0 +1,1247 @@
+/*-
+ * SPDX-License-Identifier: BSD-2-Clause
+ *
+ * Copyright (c) 2005-2009 Ariff Abdullah <ariff@FreeBSD.org>
+ * Portions Copyright (c) Ryan Beasley <ryan.beasley@gmail.com> - GSoC 2006
+ * Copyright (c) 1999 Cameron Grant <cg@FreeBSD.org>
+ * All rights reserved.
+ * Copyright (c) 2026 The FreeBSD Foundation
+ *
+ * Portions of this software were developed by Christos Margiolis
+ * <christos@FreeBSD.org> under sponsorship from the FreeBSD Foundation.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+
+#ifdef HAVE_KERNEL_OPTION_HEADERS
+#include "opt_snd.h"
+#endif
+
+#include <dev/sound/pcm/sound.h>
+
+#include "feeder_if.h"
+#include "mixer_if.h"
+
+static uint16_t snd_mixerdefaults[SOUND_MIXER_NRDEVICES] = {
+	[SOUND_MIXER_VOLUME]	= 75,
+	[SOUND_MIXER_BASS]	= 50,
+	[SOUND_MIXER_TREBLE]	= 50,
+	[SOUND_MIXER_SYNTH]	= 75,
+	[SOUND_MIXER_PCM]	= 75,
+	[SOUND_MIXER_SPEAKER]	= 75,
+	[SOUND_MIXER_LINE]	= 75,
+	[SOUND_MIXER_MIC]	= 25,
+	[SOUND_MIXER_CD]	= 75,
+	[SOUND_MIXER_IGAIN]	= 0,
+	[SOUND_MIXER_LINE1]	= 75,
+	[SOUND_MIXER_VIDEO]	= 75,
+	[SOUND_MIXER_RECLEV]	= 75,
+	[SOUND_MIXER_OGAIN]	= 50,
+	[SOUND_MIXER_MONITOR]	= 75,
+};
+
+static char* snd_mixernames[SOUND_MIXER_NRDEVICES] = SOUND_DEVICE_NAMES;
+
+static d_open_t mixer_open;
+static d_close_t mixer_close;
+static d_ioctl_t mixer_ioctl;
+
+static struct cdevsw mixer_cdevsw = {
+	.d_version =	D_VERSION,
+	.d_open =	mixer_open,
+	.d_close =	mixer_close,
+	.d_ioctl =	mixer_ioctl,
+	.d_name =	"mixer",
+};
+
+static eventhandler_tag mixer_ehtag = NULL;
+
+static struct snd_mixer *
+mixer_get_devt(device_t dev)
+{
+	struct snddev_info *snddev;
+
+	snddev = device_get_softc(dev);
+
+	return (snddev->mixer);
+}
+
+static int
+mixer_lookup(char *devname)
+{
+	int i;
+
+	for (i = 0; i < SOUND_MIXER_NRDEVICES; i++)
+		if (strncmp(devname, snd_mixernames[i],
+		    strlen(snd_mixernames[i])) == 0)
+			return i;
+	return -1;
+}
+
+static int
+mixer_set_softpcmvol(struct snd_mixer *m, struct snddev_info *d,
+    unsigned int left, unsigned int right)
+{
+	struct pcm_channel *c;
+
+	if (!PCM_REGISTERED(d))
+		return (EINVAL);
+
+	CHN_FOREACH(c, d, channels.pcm.busy) {
+		CHN_LOCK(c);
+		if (c->direction == PCMDIR_PLAY &&
+		    (c->feederflags & (1 << FEEDER_VOLUME)))
+			chn_setvolume_multi(c, SND_VOL_C_MASTER, left, right,
+			    (left + right) >> 1);
+		CHN_UNLOCK(c);
+	}
+
+	return (0);
+}
+
+static int
+mixer_set_eq(struct snd_mixer *m, struct snddev_info *d,
+    unsigned int dev, unsigned int level)
+{
+	struct pcm_channel *c;
+	struct pcm_feeder *f;
+	int tone;
+
+	if (dev == SOUND_MIXER_TREBLE)
+		tone = FEEDEQ_TREBLE;
+	else if (dev == SOUND_MIXER_BASS)
+		tone = FEEDEQ_BASS;
+	else
+		return (EINVAL);
+
+	if (!PCM_REGISTERED(d))
+		return (EINVAL);
+
+	CHN_FOREACH(c, d, channels.pcm.busy) {
+		CHN_LOCK(c);
+		f = feeder_find(c, FEEDER_EQ);
+		if (f != NULL)
+			(void)FEEDER_SET(f, tone, level);
+		CHN_UNLOCK(c);
+	}
+
+	return (0);
+}
+
+static int
+mixer_set(struct snd_mixer *m, unsigned int dev, uint32_t muted, unsigned int lev)
+{
+	struct snddev_info *d;
+	unsigned int l, r, tl, tr;
+	uint32_t parent = SOUND_MIXER_NONE, child = 0;
+	uint32_t realdev;
+	int i;
+
+	if (m == NULL || dev >= SOUND_MIXER_NRDEVICES ||
+	    (0 == (m->devs & (1 << dev))))
+		return (EINVAL);
+
+	l = min((lev & 0x00ff), 100);
+	r = min(((lev & 0xff00) >> 8), 100);
+	realdev = m->realdev[dev];
+
+	d = device_get_softc(m->dev);
+	if (d == NULL)
+		return (ENXIO);
+
+	/* Allow the volume to be "changed" while muted. */
+	if (muted & (1 << dev)) {
+		m->level_muted[dev] = l | (r << 8);
+		return (0);
+	}
+
+	/* TODO: recursive handling */
+	parent = m->parent[dev];
+	if (parent >= SOUND_MIXER_NRDEVICES)
+		parent = SOUND_MIXER_NONE;
+	if (parent == SOUND_MIXER_NONE)
+		child = m->child[dev];
+
+	if (parent != SOUND_MIXER_NONE) {
+		tl = (l * (m->level[parent] & 0x00ff)) / 100;
+		tr = (r * ((m->level[parent] & 0xff00) >> 8)) / 100;
+		if (dev == SOUND_MIXER_PCM && (d->flags & SD_F_SOFTPCMVOL))
+			(void)mixer_set_softpcmvol(m, d, tl, tr);
+		else if (realdev != SOUND_MIXER_NONE &&
+		    MIXER_SET(m, realdev, tl, tr) < 0)
+			return (EINVAL);
+	} else if (child != 0) {
+		for (i = 0; i < SOUND_MIXER_NRDEVICES; i++) {
+			if (!(child & (1 << i)) || m->parent[i] != dev)
+				continue;
+			realdev = m->realdev[i];
+			tl = (l * (m->level[i] & 0x00ff)) / 100;
+			tr = (r * ((m->level[i] & 0xff00) >> 8)) / 100;
+			if (i == SOUND_MIXER_PCM &&
+			    (d->flags & SD_F_SOFTPCMVOL))
+				(void)mixer_set_softpcmvol(m, d, tl, tr);
+			else if (realdev != SOUND_MIXER_NONE)
+				MIXER_SET(m, realdev, tl, tr);
+		}
+		realdev = m->realdev[dev];
+		if (realdev != SOUND_MIXER_NONE &&
+		    MIXER_SET(m, realdev, l, r) < 0)
+			return (EINVAL);
+	} else {
+		if (dev == SOUND_MIXER_PCM && (d->flags & SD_F_SOFTPCMVOL))
+			(void)mixer_set_softpcmvol(m, d, l, r);
+		else if ((dev == SOUND_MIXER_TREBLE ||
+		    dev == SOUND_MIXER_BASS) && (d->flags & SD_F_EQ))
+			(void)mixer_set_eq(m, d, dev, (l + r) >> 1);
+		else if (realdev != SOUND_MIXER_NONE &&
+		    MIXER_SET(m, realdev, l, r) < 0)
+			return (EINVAL);
+	}
+
+	m->level[dev] = l | (r << 8);
+	m->modify_counter++;
+
+	return (0);
+}
+
+static int
+mixer_get(struct snd_mixer *mixer, int dev)
+{
+	if ((dev < SOUND_MIXER_NRDEVICES) && (mixer->devs & (1 << dev))) {
+		if (mixer->mutedevs & (1 << dev))
+			return (mixer->level_muted[dev]);
+		else
+			return (mixer->level[dev]);
+	} else {
+		return (-1);
+	}
+}
+
+void
+mix_setmutedevs(struct snd_mixer *mixer, uint32_t mutedevs)
+{
+	uint32_t delta;
+
+	/* Filter out invalid values. */
+	mutedevs &= mixer->devs;
+	delta = (mixer->mutedevs ^ mutedevs) & mixer->devs;
+	mixer->mutedevs = mutedevs;
+
+	for (int i = 0; i < SOUND_MIXER_NRDEVICES; i++) {
+		if (!(delta & (1 << i)))
+			continue;
+		if (mutedevs & (1 << i)) {
+			mixer->level_muted[i] = mixer->level[i];
+			mixer_set(mixer, i, 0, 0);
+		} else {
+			mixer_set(mixer, i, 0, mixer->level_muted[i]);
+		}
+	}
+}
+
+static int
+mixer_setrecsrc(struct snd_mixer *mixer, uint32_t src)
+{
+	struct snddev_info *d;
+	uint32_t recsrc;
+
+	d = device_get_softc(mixer->dev);
+	if (d == NULL)
+		return (ENXIO);
+	src &= mixer->recdevs;
+	if (src == 0)
+		src = mixer->recdevs & SOUND_MASK_MIC;
+	if (src == 0)
+		src = mixer->recdevs & SOUND_MASK_MONITOR;
+	if (src == 0)
+		src = mixer->recdevs & SOUND_MASK_LINE;
+	if (src == 0 && mixer->recdevs != 0)
+		src = (1 << (ffs(mixer->recdevs) - 1));
+	recsrc = MIXER_SETRECSRC(mixer, src);
+
+	mixer->recsrc = recsrc;
+
+	return (0);
+}
+
+static int
+mixer_getrecsrc(struct snd_mixer *mixer)
+{
+	return mixer->recsrc;
+}
+
+/**
+ * @brief Retrieve the route number of the current recording device
+ *
+ * OSSv4 assigns routing numbers to recording devices, unlike the previous
+ * API which relied on a fixed table of device numbers and names.  This
+ * function returns the routing number of the device currently selected
+ * for recording.
+ *
+ * For now, this function is kind of a goofy compatibility stub atop the
+ * existing sound system.  (For example, in theory, the old sound system
+ * allows multiple recording devices to be specified via a bitmask.)
+ *
+ * @param m	mixer context container thing
+ *
+ * @retval 0		success
+ * @retval EIDRM	no recording device found (generally not possible)
+ * @todo Ask about error code
+ */
+static int
+mixer_get_recroute(struct snd_mixer *m, int *route)
+{
+	int i, cnt;
+
+	cnt = 0;
+
+	for (i = 0; i < SOUND_MIXER_NRDEVICES; i++) {
+		/** @todo can user set a multi-device mask? (== or &?) */
+		if ((1 << i) == m->recsrc)
+			break;
+		if ((1 << i) & m->recdevs)
+			++cnt;
+	}
+
+	if (i == SOUND_MIXER_NRDEVICES)
+		return EIDRM;
+
+	*route = cnt;
+	return 0;
+}
+
+/**
+ * @brief Select a device for recording
+ *
+ * This function sets a recording source based on a recording device's
+ * routing number.  Said number is translated to an old school recdev
+ * mask and passed over mixer_setrecsrc.
+ *
+ * @param m	mixer context container thing
+ *
+ * @retval 0		success(?)
+ * @retval EINVAL	User specified an invalid device number
+ * @retval otherwise	error from mixer_setrecsrc
+ */
+static int
+mixer_set_recroute(struct snd_mixer *m, int route)
+{
+	int i, cnt, ret;
+
+	ret = 0;
+	cnt = 0;
+
+	for (i = 0; i < SOUND_MIXER_NRDEVICES; i++) {
+		if ((1 << i) & m->recdevs) {
+			if (route == cnt)
+				break;
+			++cnt;
+		}
+	}
+
+	if (i == SOUND_MIXER_NRDEVICES)
+		ret = EINVAL;
+	else
+		ret = mixer_setrecsrc(m, (1 << i));
+
+	return ret;
+}
+
+void
+mix_setdevs(struct snd_mixer *m, uint32_t v)
+{
+	struct snddev_info *d;
+	int i;
+
+	if (m == NULL)
+		return;
+
+	d = device_get_softc(m->dev);
+	if (d != NULL && (d->flags & SD_F_SOFTPCMVOL))
+		v |= SOUND_MASK_PCM;
+	v |= SOUND_MASK_TREBLE | SOUND_MASK_BASS;
+	for (i = 0; i < SOUND_MIXER_NRDEVICES; i++) {
+		if (m->parent[i] < SOUND_MIXER_NRDEVICES)
+			v |= 1 << m->parent[i];
+		v |= m->child[i];
+	}
+	m->devs = v;
+}
+
+/**
+ * @brief Record mask of available recording devices
+ *
+ * Calling functions are responsible for defining the mask of available
+ * recording devices.  This function records that value in a structure
+ * used by the rest of the mixer code.
+ *
+ * @param m	mixer device context container thing
+ * @param v	mask of recording devices
+ */
+void
+mix_setrecdevs(struct snd_mixer *m, uint32_t v)
+{
+	m->recdevs = v;
+}
+
+void
+mix_setparentchild(struct snd_mixer *m, uint32_t parent, uint32_t childs)
+{
+	uint32_t mask = 0;
+	int i;
+
+	if (m == NULL || parent >= SOUND_MIXER_NRDEVICES)
+		return;
+	for (i = 0; i < SOUND_MIXER_NRDEVICES; i++) {
+		if (i == parent)
+			continue;
+		if (childs & (1 << i)) {
+			mask |= 1 << i;
+			if (m->parent[i] < SOUND_MIXER_NRDEVICES)
+				m->child[m->parent[i]] &= ~(1 << i);
+			m->parent[i] = parent;
+			m->child[i] = 0;
+		}
+	}
+	mask &= ~(1 << parent);
+	m->child[parent] = mask;
+}
+
+void
+mix_setrealdev(struct snd_mixer *m, uint32_t dev, uint32_t realdev)
+{
+	if (m == NULL || dev >= SOUND_MIXER_NRDEVICES ||
+	    !(realdev == SOUND_MIXER_NONE || realdev < SOUND_MIXER_NRDEVICES))
+		return;
+	m->realdev[dev] = realdev;
+}
+
+uint32_t
+mix_getparent(struct snd_mixer *m, uint32_t dev)
+{
+	if (m == NULL || dev >= SOUND_MIXER_NRDEVICES)
+		return SOUND_MIXER_NONE;
+	return m->parent[dev];
+}
+
+uint32_t
+mix_getdevs(struct snd_mixer *m)
+{
+	return m->devs;
+}
+
+uint32_t
+mix_getmutedevs(struct snd_mixer *m)
+{
+	return m->mutedevs;
+}
+
+uint32_t
+mix_getrecdevs(struct snd_mixer *m)
+{
+	return m->recdevs;
+}
+
+void *
+mix_getdevinfo(struct snd_mixer *m)
+{
+	return m->devinfo;
+}
+
+static struct snd_mixer *
+mixer_obj_create(device_t dev, kobj_class_t cls, void *devinfo,
+    int type, const char *desc)
+{
+	struct snddev_info *d;
+	struct snd_mixer *m;
+	size_t i;
+
+	KASSERT(dev != NULL && cls != NULL && devinfo != NULL,
+	    ("%s(): NULL data dev=%p cls=%p devinfo=%p",
+	    __func__, dev, cls, devinfo));
+	KASSERT(type == MIXER_TYPE_PRIMARY || type == MIXER_TYPE_SECONDARY,
+	    ("invalid mixer type=%d", type));
+
+	m = (struct snd_mixer *)kobj_create(cls, M_DEVBUF, M_WAITOK | M_ZERO);
+	snprintf(m->name, sizeof(m->name), "%s:mixer",
+	    device_get_nameunit(dev));
+	if (desc != NULL) {
+		strlcat(m->name, ":", sizeof(m->name));
+		strlcat(m->name, desc, sizeof(m->name));
+	}
+
+	d = device_get_softc(dev);
+	if (type == MIXER_TYPE_PRIMARY)
+		m->lock = &d->lock;
+	else {
+		mtx_init(&m->priv_lock, m->name, "secondary pcm mixer", MTX_DEF);
+		m->lock = &m->priv_lock;
+	}
+	m->type = type;
+	m->devinfo = devinfo;
+	m->dev = dev;
+	for (i = 0; i < nitems(m->parent); i++) {
+		m->parent[i] = SOUND_MIXER_NONE;
+		m->child[i] = 0;
+		m->realdev[i] = i;
+	}
+
+	if (MIXER_INIT(m)) {
+		if (type == MIXER_TYPE_SECONDARY)
+			mtx_destroy(m->lock);
+		kobj_delete((kobj_t)m, M_DEVBUF);
+		return (NULL);
+	}
+
+	return (m);
+}
+
+int
+mixer_delete(struct snd_mixer *m)
+{
+	KASSERT(m != NULL, ("NULL snd_mixer"));
+
+	/* mixer uninit can sleep --hps */
+
+	MIXER_UNINIT(m);
+
+	if (m->type == MIXER_TYPE_SECONDARY)
+		mtx_destroy(m->lock);
+	kobj_delete((kobj_t)m, M_DEVBUF);
+
+	return (0);
+}
+
+struct snd_mixer *
+mixer_create(device_t dev, kobj_class_t cls, void *devinfo, const char *desc)
+{
+	return (mixer_obj_create(dev, cls, devinfo, MIXER_TYPE_SECONDARY, desc));
+}
+
+int
+mixer_init(device_t dev, kobj_class_t cls, void *devinfo)
+{
+	struct snddev_info *snddev;
+	struct snd_mixer *m;
+	uint16_t v;
+	const char *name;
+	int i, unit, val;
+
+	snddev = device_get_softc(dev);
+	if (snddev == NULL)
+		return (-1);
+
+	name = device_get_name(dev);
+	unit = device_get_unit(dev);
+
+	m = mixer_obj_create(dev, cls, devinfo, MIXER_TYPE_PRIMARY, NULL);
+	if (m == NULL)
+		return (-1);
+
+	/* There is no need to lock here, but do it for consistency. */
+	mtx_lock(m->lock);
+
+	for (i = 0; i < SOUND_MIXER_NRDEVICES; i++) {
+		v = snd_mixerdefaults[i];
+
+		if (resource_int_value(name, unit, snd_mixernames[i],
+		    &val) == 0) {
+			if (val >= 0 && val <= 100) {
+				v = (uint16_t) val;
+			}
+		}
+
+		mixer_set(m, i, 0, v | (v << 8));
+	}
+
+	mixer_setrecsrc(m, 0); /* Set default input. */
+
+	mtx_unlock(m->lock);
+
+	snddev->mixer = m;
+
+	if (bootverbose) {
+		for (i = 0; i < SOUND_MIXER_NRDEVICES; i++) {
+			if (!(m->devs & (1 << i)))
+				continue;
+			if (m->realdev[i] != i) {
+				device_printf(dev, "Mixer \"%s\" -> \"%s\":",
+				    snd_mixernames[i],
+				    (m->realdev[i] < SOUND_MIXER_NRDEVICES) ?
+				    snd_mixernames[m->realdev[i]] : "none");
+			} else {
+				device_printf(dev, "Mixer \"%s\":",
+				    snd_mixernames[i]);
+			}
+			if (m->parent[i] < SOUND_MIXER_NRDEVICES)
+				printf(" parent=\"%s\"",
+				    snd_mixernames[m->parent[i]]);
+			if (m->child[i] != 0)
+				printf(" child=0x%08x", m->child[i]);
+			printf("\n");
+		}
+		if (snddev->flags & SD_F_SOFTPCMVOL)
+			device_printf(dev, "Soft PCM mixer ENABLED\n");
+		device_printf(dev, "EQ Treble/Bass ENABLED\n");
+	}
+
+	return (0);
+}
+
+int
+mixer_uninit(device_t dev)
+{
+	int i;
+	struct snd_mixer *m;
+
+	m = mixer_get_devt(dev);
+
+	KASSERT(m != NULL, ("NULL snd_mixer"));
+	KASSERT(m->type == MIXER_TYPE_PRIMARY,
+	    ("%s(): illegal mixer type=%d", __func__, m->type));
+
+	/*
+	 * snd_uaudio(4) in particular can call mixer_uninit() directly if
+	 * attach failed prior to pcm_register(), in which case the cdev will
+	 * not have been created. Do not call destroy_dev() unconditionally.
+	 */
+	if (MIXER_REGISTERED(m))
+		destroy_dev(m->cdev);
+
+	mtx_lock(m->lock);
+
+	for (i = 0; i < SOUND_MIXER_NRDEVICES; i++)
+		mixer_set(m, i, 0, 0);
+
+	mtx_unlock(m->lock);
+
+	/* mixer uninit can sleep --hps */
+
+	mixer_delete(m);
+
+	return 0;
+}
+
+int
+mixer_reinit(device_t dev)
+{
+	struct snd_mixer *m;
+	int i;
+
+	m = mixer_get_devt(dev);
+	mtx_lock(m->lock);
+
+	i = MIXER_REINIT(m);
+	if (i) {
+		mtx_unlock(m->lock);
+		return i;
+	}
+
+	for (i = 0; i < SOUND_MIXER_NRDEVICES; i++) {
+		if (m->mutedevs & (1 << i))
+			mixer_set(m, i, 0, 0);
+		else
+			mixer_set(m, i, 0, m->level[i]);
+	}
+
+	mixer_setrecsrc(m, m->recsrc);
+	mtx_unlock(m->lock);
+
+	return 0;
+}
+
+int
+mixer_make_dev(device_t dev)
+{
+	struct make_dev_args devargs;
+	struct snddev_info *sc;
+	int err, unit;
+
+	sc = device_get_softc(dev);
+	unit = device_get_unit(dev);
+
+	make_dev_args_init(&devargs);
+	devargs.mda_devsw = &mixer_cdevsw;
+	devargs.mda_uid = UID_ROOT;
+	devargs.mda_gid = GID_AUDIO;
+	devargs.mda_mode = 0660;
+	devargs.mda_si_drv1 = sc->mixer;
+	err = make_dev_s(&devargs, &sc->mixer->cdev, "mixer%d", unit);
+	if (err != 0) {
+		device_printf(dev, "failed to create mixer%d: error %d\n",
+		    unit, err);
+		return (err);
+	}
+
+	return (0);
+}
+
+static int
+sysctl_hw_snd_hwvol_mixer(SYSCTL_HANDLER_ARGS)
+{
+	char devname[32];
+	int error, dev;
+	struct snd_mixer *m;
+
+	m = oidp->oid_arg1;
+	strlcpy(devname, snd_mixernames[m->hwvol_mixer], sizeof(devname));
+	error = sysctl_handle_string(oidp, &devname[0], sizeof(devname), req);
+	if (error == 0 && req->newptr != NULL) {
+		if ((dev = mixer_lookup(devname)) == -1)
+			return (EINVAL);
+		mtx_lock(m->lock);
+		m->hwvol_mixer = dev;
+		mtx_unlock(m->lock);
+	}
+	return (error);
+}
+
+int
+mixer_hwvol_init(device_t dev)
+{
+	struct snd_mixer *m;
+
+	m = mixer_get_devt(dev);
+
+	m->hwvol_mixer = SOUND_MIXER_VOLUME;
+	m->hwvol_step = 5;
+	SYSCTL_ADD_INT(device_get_sysctl_ctx(dev),
+	    SYSCTL_CHILDREN(device_get_sysctl_tree(dev)),
+            OID_AUTO, "hwvol_step", CTLFLAG_RWTUN, &m->hwvol_step, 0, "");
+	SYSCTL_ADD_PROC(device_get_sysctl_ctx(dev),
+	    SYSCTL_CHILDREN(device_get_sysctl_tree(dev)), OID_AUTO,
+	    "hwvol_mixer", CTLTYPE_STRING | CTLFLAG_RWTUN | CTLFLAG_MPSAFE,
+	    m, 0, sysctl_hw_snd_hwvol_mixer, "A", "");
+	return 0;
+}
+
+void
+mixer_hwvol_mute(device_t dev)
+{
+	struct snd_mixer *m;
+
+	m = mixer_get_devt(dev);
+	mtx_lock(m->lock);
+	mix_setmutedevs(m, m->mutedevs ^ (1 << m->hwvol_mixer));
+	mtx_unlock(m->lock);
+}
+
+void
+mixer_hwvol_step(device_t dev, int left_step, int right_step)
+{
+	struct snd_mixer *m;
+	int level, left, right;
+
+	m = mixer_get_devt(dev);
+	mtx_lock(m->lock);
+	level = mixer_get(m, m->hwvol_mixer);
+	if (level != -1) {
+		left = level & 0xff;
+		right = (level >> 8) & 0xff;
+		left += left_step * m->hwvol_step;
+		if (left < 0)
+			left = 0;
+		else if (left > 100)
+			left = 100;
+		right += right_step * m->hwvol_step;
+		if (right < 0)
+			right = 0;
+		else if (right > 100)
+			right = 100;
+
+		mixer_set(m, m->hwvol_mixer, m->mutedevs, left | right << 8);
+	}
+	mtx_unlock(m->lock);
+}
+
+int
+mix_set(struct snd_mixer *m, unsigned int dev, unsigned int left, unsigned int right)
+{
+	int ret;
+
+	KASSERT(m != NULL, ("NULL snd_mixer"));
+
+	mtx_lock(m->lock);
+	ret = mixer_set(m, dev, m->mutedevs, left | (right << 8));
+	mtx_unlock(m->lock);
+
+	return (ret);
+}
+
+int
+mix_get(struct snd_mixer *m, unsigned int dev)
+{
+	int ret;
+
+	KASSERT(m != NULL, ("NULL snd_mixer"));
+
+	mtx_lock(m->lock);
+	ret = mixer_get(m, dev);
+	mtx_unlock(m->lock);
+
+	return (ret);
+}
+
+int
+mix_setrecsrc(struct snd_mixer *m, uint32_t src)
+{
+	int ret;
+
+	KASSERT(m != NULL, ("NULL snd_mixer"));
+
+	mtx_lock(m->lock);
+	ret = mixer_setrecsrc(m, src);
+	mtx_unlock(m->lock);
+
+	return (ret);
+}
+
+uint32_t
+mix_getrecsrc(struct snd_mixer *m)
+{
+	uint32_t ret;
+
+	KASSERT(m != NULL, ("NULL snd_mixer"));
+
+	mtx_lock(m->lock);
+	ret = mixer_getrecsrc(m);
+	mtx_unlock(m->lock);
+
+	return (ret);
+}
+
+device_t
+mix_get_dev(struct snd_mixer *m)
+{
+	KASSERT(m != NULL, ("NULL snd_mixer"));
+
+	return (m->dev);
+}
+
+/* ----------------------------------------------------------------------- */
+
+static int
+mixer_open(struct cdev *i_dev, int flags, int mode, struct thread *td)
+{
+	struct snddev_info *d;
+	struct snd_mixer *m;
+
+	m = i_dev->si_drv1;
+	if (m == NULL)
+		return (EBADF);
+	d = device_get_softc(m->dev);
+	if (!PCM_REGISTERED(d))
+		return (EBADF);
+
+	return (0);
+}
+
+static int
+mixer_close(struct cdev *i_dev, int flags, int mode, struct thread *td)
+{
+	struct snddev_info *d;
+	struct snd_mixer *m;
+
+	m = i_dev->si_drv1;
+	if (m == NULL)
+		return (EBADF);
+	d = device_get_softc(m->dev);
+	if (!PCM_REGISTERED(d))
+		return (EBADF);
+
+	return (0);
+}
+
+static int
+mixer_ioctl(struct cdev *i_dev, unsigned long cmd, caddr_t arg, int mode,
+    struct thread *td)
+{
+	struct snddev_info *d;
+	struct snd_mixer *m;
+	int ret;
+
+	m = i_dev->si_drv1;
+	if (m == NULL)
+		return (EBADF);
+	d = device_get_softc(m->dev);
+	if (!PCM_REGISTERED(d))
+		return (EBADF);
+
+	PCM_GIANT_ENTER(d);
+	PCM_ACQUIRE_QUICK(d);
+
+	ret = mixer_ioctl_cmd(i_dev, cmd, arg, mode, td);
+
+	PCM_RELEASE_QUICK(d);
+	PCM_GIANT_LEAVE(d);
+
+	return (ret);
+}
+
+static void
+mixer_mixerinfo(struct snd_mixer *m, mixer_info *mi)
+{
+	bzero((void *)mi, sizeof(*mi));
+	strlcpy(mi->id, m->name, sizeof(mi->id));
+	strlcpy(mi->name, device_get_desc(m->dev), sizeof(mi->name));
+	mi->modify_counter = m->modify_counter;
+}
+
+int
+mixer_ioctl_cmd(struct cdev *i_dev, unsigned long cmd, caddr_t arg, int mode,
+    struct thread *td)
+{
+	struct snd_mixer *m;
+	int ret = EINVAL, *arg_i = (int *)arg;
+	int v = -1, j = cmd & 0xff;
+
+	/*
+	 * Certain ioctls may be made on any type of device (audio, mixer,
+	 * and MIDI).  Handle those special cases here.
+	 */
+	if (IOCGROUP(cmd) == 'X') {
+		switch (cmd) {
+		case SNDCTL_SYSINFO:
+			sound_oss_sysinfo((oss_sysinfo *)arg);
+			return (0);
+		case SNDCTL_CARDINFO:
+			return (sound_oss_card_info((oss_card_info *)arg));
+		case SNDCTL_AUDIOINFO:
+			return (dsp_oss_audioinfo(i_dev, (oss_audioinfo *)arg,
+			    false));
+		case SNDCTL_AUDIOINFO_EX:
+			return (dsp_oss_audioinfo(i_dev, (oss_audioinfo *)arg,
+			    true));
+		case SNDCTL_ENGINEINFO:
+			return (dsp_oss_engineinfo(i_dev, (oss_audioinfo *)arg));
+		case SNDCTL_MIXERINFO:
+			return (mixer_oss_mixerinfo(i_dev, (oss_mixerinfo *)arg));
+		}
+		return (EINVAL);
+	}
+
+	m = i_dev->si_drv1;
+
+	if (m == NULL)
+		return (EBADF);
+
+	mtx_lock(m->lock);
+	switch (cmd) {
+	case SNDCTL_DSP_GET_RECSRC_NAMES: {
+		oss_mixer_enuminfo *ei = (oss_mixer_enuminfo *)arg;
+		char *loc;
+		int i, nvalues, nwrote, nleft, ncopied;
+
+		nvalues = 0;
+		nwrote = 0;
+		nleft = sizeof(ei->strings);
+		loc = ei->strings;
+
+		for (i = 0; i < SOUND_MIXER_NRDEVICES; i++) {
+			if (!((1 << i) & m->recdevs))
+				continue;
+			ei->strindex[nvalues] = nwrote;
+			ncopied = strlcpy(loc, snd_mixernames[i], nleft) + 1;
+			nwrote += ncopied;
+			nleft -= ncopied;
+			nvalues++;
+			loc = &ei->strings[nwrote];
+		}
+		ei->nvalues = nvalues;
+
+		ret = 0;
+		goto done;
+	}
+	case SNDCTL_DSP_GET_RECSRC:
+		ret = mixer_get_recroute(m, arg_i);
+		goto done;
+	case SNDCTL_DSP_SET_RECSRC:
+		ret = mixer_set_recroute(m, *arg_i);
+		goto done;
+	case OSS_GETVERSION:
+		*arg_i = SOUND_VERSION;
+		ret = 0;
+		goto done;
+	case SOUND_MIXER_INFO:
+		mixer_mixerinfo(m, (mixer_info *)arg);
+		ret = 0;
+		goto done;
+	}
+	if ((cmd & ~0xff) == MIXER_WRITE(0)) {
+		switch (j) {
+		case SOUND_MIXER_RECSRC:
+			ret = mixer_setrecsrc(m, *arg_i);
+			break;
+		case SOUND_MIXER_MUTE:
+			mix_setmutedevs(m, *arg_i);
+			ret = 0;
+			break;
+		default:
+			ret = mixer_set(m, j, m->mutedevs, *arg_i);
+			break;
+		}
+		mtx_unlock(m->lock);
+		return (ret);
+	}
+	if ((cmd & ~0xff) == MIXER_READ(0)) {
+		switch (j) {
+		case SOUND_MIXER_DEVMASK:
+		case SOUND_MIXER_CAPS:
+		case SOUND_MIXER_STEREODEVS:
+			v = mix_getdevs(m);
+			break;
+		case SOUND_MIXER_MUTE:
+			v = mix_getmutedevs(m);
+			break;
+		case SOUND_MIXER_RECMASK:
+			v = mix_getrecdevs(m);
+			break;
+		case SOUND_MIXER_RECSRC:
+			v = mixer_getrecsrc(m);
+			break;
+		default:
+			v = mixer_get(m, j);
+			break;
+		}
+		*arg_i = v;
+		mtx_unlock(m->lock);
+		return ((v != -1) ? 0 : ENXIO);
+	}
+done:
+	mtx_unlock(m->lock);
+	return (ret);
+}
+
+static void
+mixer_clone(void *arg,
+    struct ucred *cred,
+    char *name, int namelen, struct cdev **dev)
+{
+	struct snddev_info *d;
+
+	if (*dev != NULL)
+		return;
+	if (strcmp(name, "mixer") == 0) {
+		bus_topo_lock();
+		d = devclass_get_softc(pcm_devclass, snd_unit);
+		/* See related comment in dsp_clone(). */
+		if (PCM_REGISTERED(d) && MIXER_REGISTERED(d->mixer)) {
+			*dev = d->mixer->cdev;
+			dev_ref(*dev);
+		}
+		bus_topo_unlock();
+	}
+}
+
+static void
+mixer_sysinit(void *p)
+{
+	if (mixer_ehtag != NULL)
+		return;
+	mixer_ehtag = EVENTHANDLER_REGISTER(dev_clone, mixer_clone, 0, 1000);
+}
+
+static void
+mixer_sysuninit(void *p)
+{
+	if (mixer_ehtag == NULL)
+		return;
+	EVENTHANDLER_DEREGISTER(dev_clone, mixer_ehtag);
+	mixer_ehtag = NULL;
+}
+
+SYSINIT(mixer_sysinit, SI_SUB_DRIVERS, SI_ORDER_MIDDLE, mixer_sysinit, NULL);
+SYSUNINIT(mixer_sysuninit, SI_SUB_DRIVERS, SI_ORDER_MIDDLE, mixer_sysuninit, NULL);
+
+static void
+mixer_oss_mixerinfo_unavail(oss_mixerinfo *mi, int unit)
+{
+	bzero(mi, sizeof(*mi));
+	mi->dev = unit;
+	snprintf(mi->id, sizeof(mi->id), "mixer%d (n/a)", unit);
+	snprintf(mi->name, sizeof(mi->name), "pcm%d:mixer (unavailable)", unit);
+	mi->card_number = unit;
+	mi->legacy_device = unit;
+}
+
+/**
+ * @brief Handler for SNDCTL_MIXERINFO
+ *
+ * This function searches for a mixer based on the numeric ID stored
+ * in oss_miserinfo::dev.  If set to -1, then information about the
+ * current mixer handling the request is provided.  Note, however, that
+ * this ioctl may be made with any sound device (audio, mixer, midi).
+ *
+ * @note Caller must not hold any PCM device, channel, or mixer locks.
+ *
+ * See http://manuals.opensound.com/developer/SNDCTL_MIXERINFO.html for
+ * more information.
+ *
+ * @param i_dev	character device on which the ioctl arrived
+ * @param arg	user argument (oss_mixerinfo *)
+ *
+ * @retval EINVAL	oss_mixerinfo::dev specified a bad value
+ * @retval 0		success
+ */
+int
+mixer_oss_mixerinfo(struct cdev *i_dev, oss_mixerinfo *mi)
+{
+	struct snddev_info *d;
+	struct snd_mixer *m;
+	int i;
+
+	/*
+	 * If probing the device handling the ioctl, make sure it's a mixer
+	 * device.  (This ioctl is valid on audio, mixer, and midi devices.)
+	 */
+	if (mi->dev == -1 && i_dev->si_devsw != &mixer_cdevsw)
+		return (EINVAL);
+
+	d = NULL;
+	m = NULL;
+
+	/*
+	 * There's a 1:1 relationship between mixers and PCM devices, so
+	 * begin by iterating over PCM devices and search for our mixer.
+	 */
+	bus_topo_lock();
+	for (i = 0; pcm_devclass != NULL &&
+	    i < devclass_get_maxunit(pcm_devclass); i++) {
+		d = devclass_get_softc(pcm_devclass, i);
+		if (!PCM_REGISTERED(d)) {
+			if ((mi->dev == -1 && i == snd_unit) || mi->dev == i) {
+				mixer_oss_mixerinfo_unavail(mi, i);
+				bus_topo_unlock();
+				return (0);
+			} else
+				continue;
+		}
+
+		/* XXX Need Giant magic entry */
+
+		/* See the note in function docblock. */
+		PCM_UNLOCKASSERT(d);
+		PCM_LOCK(d);
+
+		if (!MIXER_REGISTERED(d->mixer)) {
+			if (mi->dev == i) {
+				mixer_oss_mixerinfo_unavail(mi, i);
+				PCM_UNLOCK(d);
+				bus_topo_unlock();
+				return (0);
+			}
+			PCM_UNLOCK(d);
+			continue;
+		}
+
+		if (!((d->mixer->cdev == i_dev && mi->dev == -1) ||
+		    mi->dev == i)) {
+			PCM_UNLOCK(d);
+			continue;
+		}
+
+		m = d->mixer;
+
+		/*
+		 * At this point, the following synchronization stuff
+		 * has happened:
+		 * - a specific PCM device is locked.
+		 * - a specific mixer device has been locked, so be
+		 *   sure to unlock when existing.
+		 */
+		bzero((void *)mi, sizeof(*mi));
+		mi->dev = i;
+		snprintf(mi->id, sizeof(mi->id), "mixer%d", i);
+		strlcpy(mi->name, m->name, sizeof(mi->name));
+		/**
+		 * Counter is incremented when applications change any of this
+		 * mixer's controls.  A change in value indicates that
+		 * persistent mixer applications should update their displays.
+		 */
+		mi->modify_counter = m->modify_counter;
+		mi->card_number = i;
+		/*
+		 * Currently, FreeBSD assumes 1:1 relationship between
+		 * a pcm and mixer devices, so this is hardcoded to 0.
+		 */
+		mi->port_number = 0;
+
+		/**
+		 * @todo Fill in @sa oss_mixerinfo::mixerhandle.
+		 * @note From 4Front:  "mixerhandle is an arbitrary
+		 *       string that identifies the mixer better than
+		 *       the device number (mixerinfo.dev).  Device
+		 *       numbers may change depending on the order the
+		 *       drivers are loaded. However the handle should
+		 *       remain the same provided that the sound card
+		 *       is not moved to another PCI slot."
+		 */
+
+		/**
+		 * @note
+		 * @sa oss_mixerinfo::magic is a reserved field.
+		 *
+		 * @par
+		 * From 4Front:  "magic is usually 0. However some
+		 * devices may have dedicated setup utilities and the
+		 * magic field may contain an unique driver specific
+		 * value (managed by [4Front])."
+		 */
+
+		mi->enabled = device_is_attached(m->dev) ? 1 : 0;
+		/**
+		 * The only flag for @sa oss_mixerinfo::caps is
+		 * currently MIXER_CAP_VIRTUAL, which I'm not sure we
+		 * really worry about.
+		 */
+		/**
+		 * Mixer extensions currently aren't supported, so
+		 * leave @sa oss_mixerinfo::nrext blank for now.
+		 */
+
+		/**
+		 * @todo Fill in @sa oss_mixerinfo::priority (requires
+		 *       touching drivers?)
+		 * @note The priority field is for mixer applets to
+		 * determine which mixer should be the default, with 0
+		 * being least preferred and 10 being most preferred.
+		 * From 4Front:  "OSS drivers like ICH use higher
+		 * values (10) because such chips are known to be used
+		 * only on motherboards.  Drivers for high end pro
+		 * devices use 0 because they will never be the
+		 * default mixer. Other devices use values 1 to 9
+		 * depending on the estimated probability of being the
+		 * default device.
+		 */
+
+		snprintf(mi->devnode, sizeof(mi->devnode), "/dev/mixer%d", i);
+		mi->legacy_device = i;
+
+		PCM_UNLOCK(d);
+
+		bus_topo_unlock();
+		return (0);
+	}
+	bus_topo_unlock();
+
+	return (EINVAL);
+}

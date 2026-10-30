@@ -1,0 +1,43 @@
+.\" SPDX-License-Identifier: CDDL-1.0
+.\"
+.\" This file and its contents are supplied under the terms of the
+.\" Common Development and Distribution License ("CDDL"), version 1.0.
+.\" You may only use this file in accordance with the terms of version
+.\" 1.0 of the CDDL.
+.\"
+.\" A full copy of the text of the CDDL should have accompanied this
+.\" source.  A copy of the CDDL is also available via the Internet at
+.\" https://opensource.org/license/CDDL-1.0.
+.\"
+.\" Copyright (c) 2007, Sun Microsystems, Inc. All Rights Reserved.
+.\" Copyright (c) 2012, 2018 by Delphix. All rights reserved.
+.\" Copyright (c) 2012 Cyril Plisko. All Rights Reserved.
+.\" Copyright (c) 2017 Datto Inc.
+.\" Copyright (c) 2018 George Melikov. All Rights Reserved.
+.\" Copyright 2017 Nexenta Systems, Inc.
+.\" Copyright (c) 2017 Open-E, Inc. All Rights Reserved.
+.\"
+.Dd July 11, 2022
+.Dt ZPOOL-REOPEN 8
+.Os
+.
+.Sh NAME
+.Nm zpool-reopen
+.Nd reopen vdevs associated with ZFS storage pools
+.Sh SYNOPSIS
+.Nm zpool
+.Cm reopen
+.Op Fl n
+.Oo Ar pool Oc Ns …
+.
+.Sh DESCRIPTION
+Reopen all vdevs associated with the specified pools,
+or all pools if none specified.
+.
+.Sh OPTIONS
+.Bl -tag -width "-n"
+.It Fl n
+Do not restart an in-progress scrub operation.
+This is not recommended and can
+result in partially resilvered devices unless a second scrub is performed.
+.El

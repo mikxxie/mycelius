@@ -1,0 +1,949 @@
+.include <src.opts.mk>
+
+.include "${SRCTOP}/lib/libarchive/Makefile.inc"
+
+PACKAGE=	tests
+
+WARNS?=		3
+
+ATF_TESTS_SH+=	functional_test
+
+TEST_METADATA.functional_test+=	timeout="600"
+
+BINDIR=	${TESTSDIR}
+
+PROGS+=	libarchive_test
+
+CFLAGS+= -I${.OBJDIR}
+CFLAGS+= -I${_LIBARCHIVEDIR}/libarchive/test
+CFLAGS+= -I${_LIBARCHIVEDIR}/test_utils
+CFLAGS+= -I${SRCTOP}/sys/contrib/zstd/lib
+
+CFLAGS.test_utils.c+=	-Wno-cast-align
+
+# Uncomment to link against dmalloc
+#LDADD+= -L/usr/local/lib -ldmalloc
+#CFLAGS+= -I/usr/local/include -DUSE_DMALLOC
+
+.PATH: ${_LIBARCHIVEDIR}/libarchive/test
+TESTS_SRCS= \
+	test_7zip_filename_encoding.c		\
+	test_acl_from_text_overread.c		\
+	test_archive_crc32.c		\
+	test_acl_nfs4.c				\
+	test_acl_nfs4_null_id_overflow.c	\
+	test_acl_nfs4_text.c			\
+	test_acl_pax.c				\
+	test_acl_platform_nfs4.c		\
+	test_acl_platform_posix1e.c		\
+	test_acl_posix1e.c			\
+	test_acl_posix1e_text.c			\
+	test_acl_text.c				\
+	test_ar_mode.c				\
+	test_archive_api_feature.c		\
+	test_archive_clear_error.c		\
+	test_archive_cmdline.c			\
+	test_archive_digest.c			\
+	test_archive_match_owner.c		\
+	test_archive_match_path.c		\
+	test_archive_match_time.c		\
+	test_archive_ntfs_time.c		\
+	test_archive_pathmatch.c		\
+	test_archive_pathmatch_oob.c		\
+	test_archive_parse_date.c		\
+	test_archive_read.c			\
+	test_archive_read_add_passphrase.c	\
+	test_archive_read_append_filter.c	\
+	test_archive_read_close_twice.c		\
+	test_archive_read_multiple_data_objects.c	\
+	test_archive_read_next_header_empty.c	\
+	test_archive_read_next_header_raw.c	\
+	test_archive_read_open_filenames.c	\
+	test_archive_read_open2.c		\
+	test_archive_read_set_options.c		\
+	test_archive_read_support.c		\
+	test_archive_seek_data_unsupported.c	\
+	test_archive_set_error.c		\
+	test_archive_string.c			\
+	test_archive_string_conversion.c	\
+	test_archive_string_conversion_overread.c	\
+	test_archive_write_add_filter.c		\
+	test_archive_write_add_filter_by_name.c	\
+	test_archive_write_set_format_by_name.c	\
+	test_archive_write_set_format_filter_by_ext.c \
+	test_archive_write_set_options.c	\
+	test_archive_write_set_passphrase.c	\
+	test_bad_fd.c				\
+	test_compat_bzip2.c			\
+	test_compat_cpio.c			\
+	test_compat_gtar.c			\
+	test_compat_gtar_large.c		\
+	test_compat_gzip.c			\
+	test_compat_lz4.c			\
+	test_compat_lzip.c			\
+	test_compat_lzma.c			\
+	test_compat_lzop.c			\
+	test_compat_mac.c			\
+	test_compat_perl_archive_tar.c		\
+	test_compat_plexus_archiver_tar.c	\
+	test_compat_solaris_tar_acl.c		\
+	test_compat_solaris_pax_sparse.c	\
+	test_compat_star_acl.c			\
+	test_compat_tar_directory.c		\
+	test_compat_tar_hardlink.c		\
+	test_compat_uudecode.c			\
+	test_compat_uudecode_large.c		\
+	test_compat_xz.c			\
+	test_compat_zip.c			\
+	test_compat_zstd.c			\
+	test_create_child_environment.c		\
+	test_empty_write.c			\
+	test_entry.c				\
+	test_entry_strmode.c			\
+	test_extattr_freebsd.c			\
+	test_filter_count.c			\
+	test_gnutar_filename_encoding.c		\
+	test_link_resolver.c			\
+	test_open_fd.c				\
+	test_open_failure.c			\
+	test_open_file.c			\
+	test_open_filename.c			\
+	test_pax_filename_encoding.c		\
+	test_pax_xattr_header.c			\
+	test_read_data_block_offset_at_eof.c	\
+	test_read_data_into_fd_no_offset_reported.c	\
+	test_read_data_into_fd_size_exceeds_declared.c	\
+	test_read_data_large.c			\
+	test_read_disk.c			\
+	test_read_disk_directory_traversals.c	\
+	test_read_disk_entry_from_file.c	\
+	test_read_extract.c			\
+	test_read_file_nonexistent.c		\
+	test_read_files_compressed.c		\
+	test_read_filter_compress.c		\
+	test_read_filter_grzip.c		\
+	test_read_filter_gzip_recursive.c	\
+	test_read_filter_lrzip.c		\
+	test_read_filter_lz4_raw.c		\
+	test_read_filter_lzop.c			\
+	test_read_filter_lzop_multiple_parts.c	\
+	test_read_filter_program.c		\
+	test_read_filter_program_signature.c	\
+	test_read_filter_zstd_raw.c		\
+	test_read_filter_uudecode.c		\
+	test_read_filter_uudecode_newlines.c	\
+	test_read_filter_uudecode_raw.c		\
+	test_read_format_7zip.c			\
+	test_read_format_7zip_encryption_data.c \
+	test_read_format_7zip_encryption_header.c	\
+	test_read_format_7zip_entries_oom.c	\
+	test_read_format_7zip_folders_oom.c	\
+	test_read_format_7zip_encryption_partially.c	\
+	test_read_format_7zip_issue2765.c	\
+	test_read_format_7zip_malformed.c	\
+	test_read_format_7zip_packinfo_digests.c	\
+	test_read_format_ar.c			\
+	test_read_format_cab.c			\
+	test_read_format_cab_filename.c		\
+	test_read_format_cab_lzx_16bit.c	\
+	test_read_format_cab_lzx_e8.c		\
+	test_read_format_cab_lzx_invalid_history.c	\
+	test_read_format_cab_lzx_oob.c		\
+	test_read_format_cab_mszip_oob.c	\
+	test_read_format_cab_multi.c		\
+	test_read_format_cab_skip_across_folders.c	\
+	test_read_format_cab_skip_malformed.c	\
+	test_read_format_cpio_afio.c		\
+	test_read_format_cpio_bin.c		\
+	test_read_format_cpio_bin_Z.c		\
+	test_read_format_cpio_bin_be.c		\
+	test_read_format_cpio_bin_bz2.c		\
+	test_read_format_cpio_bin_gz.c		\
+	test_read_format_cpio_bin_le.c		\
+	test_read_format_cpio_bin_lzip.c	\
+	test_read_format_cpio_bin_lzma.c	\
+	test_read_format_cpio_bin_xz.c		\
+	test_read_format_cpio_filename.c	\
+	test_read_format_cpio_odc.c		\
+	test_read_format_cpio_svr4_gzip.c	\
+	test_read_format_cpio_svr4_bzip2_rpm.c	\
+	test_read_format_cpio_svr4_gzip_rpm.c	\
+	test_read_format_cpio_svr4c_Z.c		\
+	test_read_format_cpio_symlink_trailer.c	\
+	test_read_format_empty.c		\
+	test_read_format_gtar_filename.c	\
+	test_read_format_gtar_gz.c		\
+	test_read_format_gtar_lzma.c		\
+	test_read_format_gtar_redundant_L.c	\
+	test_read_format_gtar_sparse.c		\
+	test_read_format_gtar_sparse_exceeds_length.c	\
+	test_read_format_gtar_sparse_length.c	\
+	test_read_format_gtar_sparse_skip_entry.c \
+	test_read_format_huge_rpm.c		\
+	test_read_format_iso_Z.c		\
+	test_read_format_iso_joliet_utf16be_overflow.c	\
+	test_read_format_iso_multi_extent.c	\
+	test_read_format_iso_xorriso.c		\
+	test_read_format_iso_zisofs_overflow.c	\
+	test_read_format_isorr_rr_moved.c	\
+	test_read_format_isojoliet_compress.c	\
+	test_read_format_isojoliet_long.c	\
+	test_read_format_isojoliet_rr.c		\
+	test_read_format_isojoliet_versioned.c	\
+	test_read_format_isorr_compress.c	\
+	test_read_format_isorr_ce.c		\
+	test_read_format_isorr_ce_loop.c	\
+	test_read_format_isorr_new_compress.c	\
+	test_read_format_isozisofs_compress.c	\
+	test_read_format_iso_rockridge_ce_overflow.c \
+	test_read_format_iso_rockridge_cl_re_cycle.c \
+	test_read_format_iso_rockridge_zf_overflow.c	\
+	test_read_format_lha.c			\
+	test_read_format_lha_amiga_script.c \
+	test_read_format_lha_bugfix_0.c		\
+	test_read_format_lha_filename.c		\
+	test_read_format_lha_filename_utf16.c	\
+	test_read_format_lha_oversize_header.c	\
+	test_read_format_lha_symlink_missing_target.c	\
+	test_read_format_mtree.c		\
+	test_read_format_mtree_crash747.c	\
+	test_read_format_mtree_size.c		\
+	test_read_format_pax_bz2.c		\
+	test_read_format_rar.c			\
+	test_read_format_rar5.c			\
+	test_read_format_rar5_bad_filter.c	\
+	test_read_format_rar5_bad_tables.c	\
+	test_read_format_rar5_block_hdr_fail_loop.c	\
+	test_read_format_rar5_extra_field_underflow.c	\
+	test_read_format_rar5_header_size_wraparound.c \
+	test_read_format_rar5_loop_bug.c	\
+	test_read_format_rar5_redir_overflow.c	\
+	test_read_format_rar5_truncated_htime.c	\
+	test_read_format_rar5_varint_near_eof.c	\
+	test_read_format_rar_encryption.c	\
+	test_read_format_rar_encryption_data.c	\
+	test_read_format_rar_encryption_header.c	\
+	test_read_format_rar_encryption_partially.c	\
+	test_read_format_rar_filter.c		\
+	test_read_format_rar_filter_incomplete_block.c	\
+	test_read_format_rar_invalid1.c		\
+	test_read_format_rar_overflow.c		\
+	test_read_format_raw.c			\
+	test_read_format_tar.c			\
+	test_read_format_tar_acl_oob_read.c	\
+	test_read_format_tar_V_negative_size.c	\
+	test_read_format_tar_concatenated.c	\
+	test_read_format_tar_empty_filename.c	\
+	test_read_format_tar_empty_pax.c	\
+	test_read_format_tar_empty_with_gnulabel.c	\
+	test_read_format_tar_filename.c		\
+	test_read_format_tar_invalid_pax_size.c \
+	test_read_format_tar_mac_metadata.c	\
+	test_read_format_tar_pax_g_large.c	\
+	test_read_format_tar_pax_global_header.c	\
+	test_read_format_tar_pax_large_attr.c	\
+	test_read_format_tar_pax_negative_time.c	\
+	test_read_format_tar_pax_sun_holesdata.c	\
+	test_read_format_tar_pax_timestamps.c	\
+	test_read_format_tar_timestamp_overflow.c	\
+	test_read_format_tbz.c			\
+	test_read_format_tgz.c			\
+	test_read_format_tlz.c			\
+	test_read_format_txz.c			\
+	test_read_format_tz.c			\
+	test_read_format_ustar_filename.c	\
+	test_read_format_warc.c			\
+	test_read_format_xar.c			\
+	test_read_format_xar_doublelink.c	\
+	test_read_format_zip.c			\
+	test_read_format_zip_7075_utf8_paths.c	\
+	test_read_format_zip_ambiguous_timestamps.c	\
+	test_read_format_zip_comment_stored.c	\
+	test_read_format_zip_dos_mtime_precedence.c \
+	test_read_format_zip_empty.c \
+	test_read_format_zip_encryption_data.c	\
+	test_read_format_zip_encryption_header.c	\
+	test_read_format_zip_encryption_partially.c	\
+	test_read_format_zip_extra_padding.c	\
+	test_read_format_zip_filename.c		\
+	test_read_format_zip_high_compression.c	\
+	test_read_format_zip_jar.c		\
+	test_read_format_zip_lzma_alone_large_size.c	\
+	test_read_format_zip_mac_metadata.c	\
+	test_read_format_zip_malformed.c	\
+	test_read_format_zip_msdos.c		\
+	test_read_format_zip_negative_timestamps.c	\
+	test_read_format_zip_nested.c		\
+	test_read_format_zip_nofiletype.c	\
+	test_read_format_zip_ntfs_precedence.c	\
+	test_read_format_zip_ntfs_timestamp.c	\
+	test_read_format_zip_padded.c		\
+	test_read_format_zip_sfx.c		\
+	test_read_format_zip_size_exceeds_declared.c	\
+	test_read_format_zip_symlink_unsupported_compression.c	\
+	test_read_format_zip_traditional_encryption_data.c	\
+	test_read_format_zip_uncompressed_size_off_by_4gib.c	\
+	test_read_format_zip_unset_times.c	\
+	test_read_format_zip_winzip_aes.c	\
+	test_read_format_zip_winzip_aes_large.c	\
+	test_read_format_zip_with_invalid_traditional_eocd.c	\
+	test_read_format_zip_zip64.c		\
+	test_read_format_zip_zipx_encrypted.c	\
+	test_read_format_zip_zipx_lzma_oom.c	\
+	test_read_large.c			\
+	test_read_pax_empty_val_no_nl.c		\
+	test_read_pax_xattr_rht_security_selinux.c	\
+	test_read_pax_xattr_schily.c		\
+	test_read_pax_truncated.c		\
+	test_read_position.c			\
+	test_read_set_format.c			\
+	test_read_too_many_filters.c		\
+	test_read_truncated.c			\
+	test_read_truncated_filter.c		\
+	test_short_writes.c			\
+	test_sparse_basic.c			\
+	test_tar_filenames.c			\
+	test_tar_large.c			\
+	test_v7tar_filename_encoding.c		\
+	test_warn_missing_hardlink_target.c	\
+	test_ustar_filenames.c			\
+	test_ustar_filename_encoding.c		\
+	test_write_disk.c			\
+	test_write_disk_appledouble.c		\
+	test_write_disk_failures.c		\
+	test_write_disk_fixup.c			\
+	test_write_disk_hardlink.c		\
+	test_write_disk_hfs_compression.c	\
+	test_write_disk_lookup.c		\
+	test_write_disk_mac_metadata.c		\
+	test_write_disk_no_hfs_compression.c	\
+	test_write_disk_perms.c			\
+	test_write_disk_secure.c		\
+	test_write_disk_secure_noabsolutepaths.c	\
+	test_write_disk_secure_physicaldrive.c	\
+	test_write_disk_secure744.c		\
+	test_write_disk_secure745.c		\
+	test_write_disk_secure746.c		\
+	test_write_disk_sparse.c		\
+	test_write_disk_symlink.c		\
+	test_write_disk_times.c			\
+	test_write_filter_b64encode.c		\
+	test_write_filter_bzip2.c		\
+	test_write_filter_compress.c		\
+	test_write_filter_gzip.c		\
+	test_write_filter_gzip_timestamp.c	\
+	test_write_filter_lrzip.c		\
+	test_write_filter_lz4.c			\
+	test_write_filter_lzip.c		\
+	test_write_filter_lzma.c		\
+	test_write_filter_lzop.c		\
+	test_write_filter_program.c		\
+	test_write_filter_uuencode.c		\
+	test_write_filter_xz.c			\
+	test_write_filter_zstd.c		\
+	test_write_format_7zip.c		\
+	test_write_format_7zip_empty.c		\
+	test_write_format_7zip_large.c		\
+	test_write_format_ar.c			\
+	test_write_format_cpio.c		\
+	test_write_format_cpio_empty.c		\
+	test_write_format_cpio_newc.c		\
+	test_write_format_cpio_odc.c		\
+	test_write_format_gnutar.c		\
+	test_write_format_gnutar_filenames.c	\
+	test_write_format_gnutar_huge.c		\
+	test_write_format_iso9660.c		\
+	test_write_format_iso9660_boot.c	\
+	test_write_format_iso9660_bugs.c	\
+	test_write_format_iso9660_empty.c	\
+	test_write_format_iso9660_filename.c	\
+	test_write_format_iso9660_joliet_id.c	\
+	test_write_format_iso9660_rockridge.c	\
+	test_write_format_iso9660_rockridge_overflow.c	\
+	test_write_format_iso9660_rr_moved_notdir.c	\
+	test_write_format_iso9660_zisofs.c	\
+	test_write_format_iso9660_zisofs_overflow.c	\
+	test_write_format_mtree.c		\
+	test_write_format_mtree_absolute.c	\
+	test_write_format_mtree_absolute_path.c	\
+	test_write_format_mtree_classic.c	\
+	test_write_format_mtree_classic_indent.c	\
+	test_write_format_mtree_dotdot.c	\
+	test_write_format_mtree_fflags.c	\
+	test_write_format_mtree_no_separator.c	\
+	test_write_format_mtree_preset_digests.c	\
+	test_write_format_mtree_quoted_filename.c	\
+	test_write_format_mtree_null_deref.c	\
+	test_write_format_pax.c			\
+	test_write_format_pax_align.c		\
+	test_write_format_raw.c			\
+	test_write_format_raw_b64.c		\
+	test_write_format_shar_empty.c		\
+	test_write_format_tar.c			\
+	test_write_format_tar_empty_dirname.c	\
+	test_write_format_tar_empty.c		\
+	test_write_format_tar_sparse.c		\
+	test_write_format_tar_ustar.c		\
+	test_write_format_tar_v7tar.c		\
+	test_write_format_warc.c		\
+	test_write_format_warc_empty.c		\
+	test_write_format_xar.c			\
+	test_write_format_xar_bugs.c		\
+	test_write_format_xar_empty.c		\
+	test_write_format_xar_fflags.c		\
+	test_write_format_zip.c			\
+	test_write_format_zip_compression_store.c	\
+	test_write_format_zip_compression_zstd.c	\
+	test_write_format_zip_compression_bzip2.c	\
+	test_write_format_zip_compression_lzma_xz.c	\
+	test_write_format_zip_empty.c		\
+	test_write_format_zip_empty_pathname.c	\
+	test_write_format_zip_empty_zip64.c	\
+	test_write_format_zip_entry_size_unset.c	\
+	test_write_format_zip_file.c		\
+	test_write_format_zip_file_zip64.c	\
+	test_write_format_zip_large.c		\
+	test_write_format_zip_long_pathname.c	\
+	test_write_format_zip_zip64.c		\
+	test_write_format_zip64_stream.c	\
+	test_write_format_zip_stream.c		\
+	test_write_format_zip_windows_path.c	\
+	test_write_open_memory.c		\
+	test_write_read_format_zip.c		\
+	test_xattr_platform.c			\
+	test_zip_filename_encoding.c
+
+# Deterministic failures:
+# Fails with `test_read_disk_directory_traversals.c:1094: File at has atime 886622, 1443306049 seconds ago`
+BROKEN_TESTS+=		test_read_disk_directory_traversals
+
+# Bug 273732: test fails with:
+#     `Error 26 : LZ4F frame decoding could not complete: invalid frame`
+BROKEN_TESTS+=		test_read_filter_lz4_raw_skip
+
+
+.if 0
+# test_fuzz.c is not a real test, but rather a simple fuzz-test using random().
+# Since this is not a regression/unit test, we don't include it by default.
+# If you would still like to include it, comment out the `.if 0`.
+TESTS_SRCS+=	\
+	test_fuzz.c
+${PACKAGE}FILES+=	test_fuzz.cab.uu
+${PACKAGE}FILES+=	test_fuzz.lzh.uu
+${PACKAGE}FILES+=	test_fuzz_1.iso.Z.uu
+# Non-deterministic failures:
+# (Times out?) [and] crashes
+BROKEN_TESTS+=		test_fuzz_rar
+.endif
+
+# Build the test program.
+SRCS.libarchive_test=		\
+	${TESTS_SRCS}		\
+	read_open_memory.c	\
+	list.h
+
+LIBADD.libarchive_test=	archive
+
+.PATH: ${_LIBARCHIVEDIR}/test_utils
+SRCS.libarchive_test+=	test_main.c	\
+			test_utils.c
+
+# list.h is just a list of all tests, as indicated by DEFINE_TEST macro lines
+list.h: ${TESTS_SRCS} Makefile
+	@(cd ${_LIBARCHIVEDIR}/libarchive/test && \
+	grep -E -h ^DEFINE_TEST ${.ALLSRC:N*Makefile} | \
+	    egrep -v '${BROKEN_TESTS:tW:C/ /|/g}') > ${.TARGET}.tmp
+	@mv ${.TARGET}.tmp ${.TARGET}
+
+CLEANTESTS+=	list.h list.h.tmp
+${PACKAGE}FILES+=	README
+${PACKAGE}FILES+=	test_acl_pax_posix1e.tar.uu
+${PACKAGE}FILES+=	test_acl_pax_nfs4.tar.uu
+${PACKAGE}FILES+=	test_archive_read_open_filenames_split_uaf_1.tar.uu
+${PACKAGE}FILES+=	test_archive_read_open_filenames_split_uaf_2.tar.uu
+${PACKAGE}FILES+=	test_archive_string_conversion.txt.Z.uu
+${PACKAGE}FILES+=	test_archive_pathmatch_oob_bracket.bin.uu
+${PACKAGE}FILES+=	test_archive_pathmatch_oob_strchr.bin.uu
+${PACKAGE}FILES+=	test_compat_bzip2_1.tbz.uu
+${PACKAGE}FILES+=	test_compat_bzip2_2.tbz.uu
+${PACKAGE}FILES+=	test_compat_cpio_1.cpio.uu
+${PACKAGE}FILES+=	test_compat_gtar_1.tar.uu
+${PACKAGE}FILES+=	test_compat_gtar_2.tar.uu
+${PACKAGE}FILES+=	test_compat_gzip_1.tgz.uu
+${PACKAGE}FILES+=	test_compat_gzip_2.tgz.uu
+${PACKAGE}FILES+=	test_compat_lz4_1.tar.lz4.uu
+${PACKAGE}FILES+=	test_compat_lz4_2.tar.lz4.uu
+${PACKAGE}FILES+=	test_compat_lz4_3.tar.lz4.uu
+${PACKAGE}FILES+=	test_compat_lz4_B4.tar.lz4.uu
+${PACKAGE}FILES+=	test_compat_lz4_B4BD.tar.lz4.uu
+${PACKAGE}FILES+=	test_compat_lz4_B4BDBX.tar.lz4.uu
+${PACKAGE}FILES+=	test_compat_lz4_B5.tar.lz4.uu
+${PACKAGE}FILES+=	test_compat_lz4_B5BD.tar.lz4.uu
+${PACKAGE}FILES+=	test_compat_lz4_B6.tar.lz4.uu
+${PACKAGE}FILES+=	test_compat_lz4_B6BD.tar.lz4.uu
+${PACKAGE}FILES+=	test_compat_lz4_B7.tar.lz4.uu
+${PACKAGE}FILES+=	test_compat_lz4_B7BD.tar.lz4.uu
+${PACKAGE}FILES+=	test_compat_lz4_skippable_frames_B4.tar.lz4.uu
+${PACKAGE}FILES+=	test_compat_lzip_1.tlz.uu
+${PACKAGE}FILES+=	test_compat_lzip_2.tlz.uu
+${PACKAGE}FILES+=	test_compat_lzip_3.lz.uu
+${PACKAGE}FILES+=	test_compat_lzip_4.tlz.uu
+${PACKAGE}FILES+=	test_compat_lzma_1.tlz.uu
+${PACKAGE}FILES+=	test_compat_lzma_2.tlz.uu
+${PACKAGE}FILES+=	test_compat_lzma_3.tlz.uu
+${PACKAGE}FILES+=	test_compat_lzop_1.tar.lzo.uu
+${PACKAGE}FILES+=	test_compat_lzop_2.tar.lzo.uu
+${PACKAGE}FILES+=	test_compat_lzop_3.tar.lzo.uu
+${PACKAGE}FILES+=	test_compat_mac-1.tar.Z.uu
+${PACKAGE}FILES+=	test_compat_mac-2.tar.Z.uu
+${PACKAGE}FILES+=	test_compat_perl_archive_tar.tar.uu
+${PACKAGE}FILES+=	test_compat_plexus_archiver_tar.tar.uu
+${PACKAGE}FILES+=	test_compat_solaris_pax_sparse_1.pax.Z.uu
+${PACKAGE}FILES+=	test_compat_solaris_pax_sparse_2.pax.Z.uu
+${PACKAGE}FILES+=	test_compat_solaris_tar_acl.tar.uu
+${PACKAGE}FILES+=	test_compat_star_acl_nfs4.tar.uu
+${PACKAGE}FILES+=	test_compat_star_acl_posix1e.tar.uu
+${PACKAGE}FILES+=	test_compat_tar_directory_1.tar.uu
+${PACKAGE}FILES+=	test_compat_tar_hardlink_1.tar.uu
+${PACKAGE}FILES+=	test_compat_uudecode_large.tar.Z.uu
+${PACKAGE}FILES+=	test_compat_xz_1.txz.uu
+${PACKAGE}FILES+=	test_compat_zip_1.zip.uu
+${PACKAGE}FILES+=	test_compat_zip_2.zip.uu
+${PACKAGE}FILES+=	test_compat_zip_3.zip.uu
+${PACKAGE}FILES+=	test_compat_zip_4.zip.uu
+${PACKAGE}FILES+=	test_compat_zip_5.zip.uu
+${PACKAGE}FILES+=	test_compat_zip_6.zip.uu
+${PACKAGE}FILES+=	test_compat_zip_7.xps.uu
+${PACKAGE}FILES+=	test_compat_zip_8.zip.uu
+${PACKAGE}FILES+=	test_compat_zstd_1.tar.zst.uu
+${PACKAGE}FILES+=	test_compat_zstd_2.tar.zst.uu
+${PACKAGE}FILES+=	test_compat_zstd_3.tar.zst.uu
+${PACKAGE}FILES+=	test_pax_filename_encoding.tar.uu
+${PACKAGE}FILES+=	test_pax_xattr_header_all.tar.uu
+${PACKAGE}FILES+=	test_pax_xattr_header_libarchive.tar.uu
+${PACKAGE}FILES+=	test_pax_xattr_header_schily.tar.uu
+${PACKAGE}FILES+=	test_rar_multivolume_multiple_files.part1.rar.uu
+${PACKAGE}FILES+=	test_rar_multivolume_multiple_files.part2.rar.uu
+${PACKAGE}FILES+=	test_rar_multivolume_multiple_files.part3.rar.uu
+${PACKAGE}FILES+=	test_rar_multivolume_multiple_files.part4.rar.uu
+${PACKAGE}FILES+=	test_rar_multivolume_multiple_files.part5.rar.uu
+${PACKAGE}FILES+=	test_rar_multivolume_multiple_files.part6.rar.uu
+${PACKAGE}FILES+=	test_rar_multivolume_single_file.part1.rar.uu
+${PACKAGE}FILES+=	test_rar_multivolume_single_file.part2.rar.uu
+${PACKAGE}FILES+=	test_rar_multivolume_single_file.part3.rar.uu
+${PACKAGE}FILES+=	test_rar_multivolume_uncompressed_files.part01.rar.uu
+${PACKAGE}FILES+=	test_rar_multivolume_uncompressed_files.part02.rar.uu
+${PACKAGE}FILES+=	test_rar_multivolume_uncompressed_files.part03.rar.uu
+${PACKAGE}FILES+=	test_rar_multivolume_uncompressed_files.part04.rar.uu
+${PACKAGE}FILES+=	test_rar_multivolume_uncompressed_files.part05.rar.uu
+${PACKAGE}FILES+=	test_rar_multivolume_uncompressed_files.part06.rar.uu
+${PACKAGE}FILES+=	test_rar_multivolume_uncompressed_files.part07.rar.uu
+${PACKAGE}FILES+=	test_rar_multivolume_uncompressed_files.part08.rar.uu
+${PACKAGE}FILES+=	test_rar_multivolume_uncompressed_files.part09.rar.uu
+${PACKAGE}FILES+=	test_rar_multivolume_uncompressed_files.part10.rar.uu
+${PACKAGE}FILES+=	test_read_data_into_fd_size_exceeds_declared_deflate.zip.uu
+${PACKAGE}FILES+=	test_read_data_into_fd_size_exceeds_declared_stored.zip.uu
+${PACKAGE}FILES+=	test_read_files_compressed.part01.uu
+${PACKAGE}FILES+=	test_read_files_compressed.part02.uu
+${PACKAGE}FILES+=	test_read_filter_grzip.tar.grz.uu
+${PACKAGE}FILES+=	test_read_filter_gzip_recursive.gz.uu
+${PACKAGE}FILES+=	test_read_filter_lrzip.tar.lrz.uu
+${PACKAGE}FILES+=	test_read_filter_lz4_raw_skip.uu
+${PACKAGE}FILES+=	test_read_filter_lzop.tar.lzo.uu
+${PACKAGE}FILES+=	test_read_filter_lzop_multiple_parts.tar.lzo.uu
+${PACKAGE}FILES+=	test_read_filter_uudecode_base64_raw.uu
+${PACKAGE}FILES+=	test_read_filter_uudecode_raw.uu
+${PACKAGE}FILES+=	test_read_filter_zstd_raw_loop.uu
+${PACKAGE}FILES+=	test_read_format_7zip_bcj2_bzip2.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_bcj2_copy_1.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_bcj2_copy_2.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_bcj2_copy_lzma.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_bcj2_deflate.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_deflate_arm64.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_deflate_arm64_large.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_deflate_arm_arm64.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_deflate_armthumb.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_deflate_delta.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_deflate_ia64.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_deflate_powerpc.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_deflate_riscv.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_bcj2_lzma1_1.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_bcj2_lzma1_2.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_bcj2_lzma2_1.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_bcj2_lzma2_2.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_bcj_bzip2.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_bcj_copy.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_bcj_deflate.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_bcj_lzma1.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_bcj_lzma2.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_bzip2.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_copy.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_copy_2.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_deflate.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_delta_lzma1.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_delta_lzma2.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_delta4_lzma1.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_delta4_lzma2.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_empty_archive.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_empty_file.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_archive_properties.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_encryption.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_encryption_header.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_encryption_partially.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_entries_oom.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_folders_oom.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_extract_second.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_issue2765.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_lzma1.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_lzma1_2.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_lzma1_lzma2.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_lzma1_arm.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_lzma1_arm64.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_lzma1_armthumb.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_lzma1_ia64.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_lzma1_powerpc.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_lzma1_riscv.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_lzma1_sparc.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_lzma2.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_lzma2_arm.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_lzma2_arm64.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_lzma2_powerpc.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_lzma2_riscv.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_lzma2_sparc.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_malformed.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_malformed2.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_malformed3.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_malformed4.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_malformed_numfiles_oom.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_null_client_next.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_packinfo_digests.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_ppmd.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_ppmd_arm64.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_ppmd_bcj.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_ppmd_small_block.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_sfx_boundary_elf.elf.uu
+${PACKAGE}FILES+=	test_read_format_7zip_sfx_boundary_pe.exe.uu
+${PACKAGE}FILES+=	test_read_format_7zip_sfx_elf64trunc.elf.uu
+${PACKAGE}FILES+=	test_read_format_7zip_sfx_elf.elf.uu
+${PACKAGE}FILES+=	test_read_format_7zip_sfx_modified_pe.exe.uu
+${PACKAGE}FILES+=	test_read_format_7zip_sfx_pe.exe.uu
+${PACKAGE}FILES+=	test_read_format_7zip_solid_zstd.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_symbolic_name.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_zstd.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_zstd_arm.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_zstd_bcj.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_zstd_nobcj.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_zstd_sparc.7z.uu
+${PACKAGE}FILES+=	test_read_format_7zip_win_attrib.7z.uu
+${PACKAGE}FILES+=	test_read_format_ar.ar.uu
+${PACKAGE}FILES+=	test_read_format_cab_1.cab.uu
+${PACKAGE}FILES+=	test_read_format_cab_2.cab.uu
+${PACKAGE}FILES+=	test_read_format_cab_3.cab.uu
+${PACKAGE}FILES+=	test_read_format_cab_filename_cp932.cab.uu
+${PACKAGE}FILES+=	test_read_format_cab_lzx_16bit.cab.uu
+${PACKAGE}FILES+=	test_read_format_cab_lzx_e8.cab.uu
+${PACKAGE}FILES+=	test_read_format_cab_lzx_invalid_history.cab.uu
+${PACKAGE}FILES+=	test_read_format_cab_lzx_literal_control.cab.uu
+${PACKAGE}FILES+=	test_read_format_cab_lzx_oob.cab.uu
+${PACKAGE}FILES+=	test_read_format_cab_multi.p1.cab.uu
+${PACKAGE}FILES+=	test_read_format_cab_multi.p2.cab.uu
+${PACKAGE}FILES+=	test_read_format_cab_skip_across_folders.cab.uu
+${PACKAGE}FILES+=	test_read_format_cab_skip_malformed.cab.uu
+${PACKAGE}FILES+=	test_read_format_cpio_afio_header.part1.cpio.uu
+${PACKAGE}FILES+=	test_read_format_cpio_afio_header.part2.cpio.uu
+${PACKAGE}FILES+=	test_read_format_cpio_bin_be.cpio.uu
+${PACKAGE}FILES+=	test_read_format_cpio_bin_le.cpio.uu
+${PACKAGE}FILES+=	test_read_format_cpio_filename_cp866.cpio.uu
+${PACKAGE}FILES+=	test_read_format_cpio_filename_eucjp.cpio.uu
+${PACKAGE}FILES+=	test_read_format_cpio_filename_koi8r.cpio.uu
+${PACKAGE}FILES+=	test_read_format_cpio_filename_utf8_jp.cpio.uu
+${PACKAGE}FILES+=	test_read_format_cpio_filename_utf8_ru.cpio.uu
+${PACKAGE}FILES+=	test_read_format_cpio_svr4_bzip2_rpm.rpm.uu
+${PACKAGE}FILES+=	test_read_format_cpio_svr4_gzip_rpm.rpm.uu
+${PACKAGE}FILES+=	test_read_format_cpio_symlink_trailer.cpio.uu
+${PACKAGE}FILES+=	test_read_format_gtar_filename_cp866.tar.Z.uu
+${PACKAGE}FILES+=	test_read_format_gtar_filename_eucjp.tar.Z.uu
+${PACKAGE}FILES+=	test_read_format_gtar_filename_koi8r.tar.Z.uu
+${PACKAGE}FILES+=	test_read_format_gtar_redundant_L.tar.Z.uu
+${PACKAGE}FILES+=	test_read_format_gtar_sparse_1_13.tar.uu
+${PACKAGE}FILES+=	test_read_format_gtar_sparse_1_17.tar.uu
+${PACKAGE}FILES+=	test_read_format_gtar_sparse_1_17_posix00.tar.uu
+${PACKAGE}FILES+=	test_read_format_gtar_sparse_1_17_posix01.tar.uu
+${PACKAGE}FILES+=	test_read_format_gtar_sparse_1_17_posix10.tar.uu
+${PACKAGE}FILES+=	test_read_format_gtar_sparse_1_17_posix10_modified.tar.uu
+${PACKAGE}FILES+=	test_read_format_gtar_sparse_exceeds_length.tar.Z.uu
+${PACKAGE}FILES+=	test_read_format_gtar_sparse_reuse.tar.uu
+${PACKAGE}FILES+=	test_read_format_gtar_sparse_length.tar.Z.uu
+${PACKAGE}FILES+=	test_read_format_gtar_sparse_skip_entry.tar.Z.uu
+${PACKAGE}FILES+=	test_read_format_huge_rpm.rpm.uu
+${PACKAGE}FILES+=	test_read_format_iso.iso.Z.uu
+${PACKAGE}FILES+=	test_read_format_iso_2.iso.Z.uu
+${PACKAGE}FILES+=	test_read_format_iso_3.iso.Z.uu
+${PACKAGE}FILES+=	test_read_format_iso_joliet.iso.Z.uu
+${PACKAGE}FILES+=	test_read_format_iso_joliet_by_nero.iso.Z.uu
+${PACKAGE}FILES+=	test_read_format_iso_joliet_long.iso.Z.uu
+${PACKAGE}FILES+=	test_read_format_iso_joliet_rockridge.iso.Z.uu
+${PACKAGE}FILES+=	test_read_format_iso_joliet_utf16be_overflow.iso.uu
+${PACKAGE}FILES+=	test_read_format_iso_multi_extent.iso.Z.uu
+${PACKAGE}FILES+=	test_read_format_iso_rockridge.iso.Z.uu
+${PACKAGE}FILES+=	test_read_format_iso_rockridge_ce.iso.Z.uu
+${PACKAGE}FILES+=	test_read_format_iso_rockridge_ce_loop.iso.Z.uu
+${PACKAGE}FILES+=	test_read_format_iso_rockridge_ce_overflow.iso.Z.uu
+${PACKAGE}FILES+=	test_read_format_iso_rockridge_cl_re_control.iso.Z.uu
+${PACKAGE}FILES+=	test_read_format_iso_rockridge_cl_re_cycle.iso.Z.uu
+${PACKAGE}FILES+=	test_read_format_iso_rockridge_new.iso.Z.uu
+${PACKAGE}FILES+=	test_read_format_iso_rockridge_rr_moved.iso.Z.uu
+${PACKAGE}FILES+=	test_read_format_iso_rockridge_zf_overflow.iso.uu
+${PACKAGE}FILES+=	test_read_format_iso_xorriso.iso.Z.uu
+${PACKAGE}FILES+=	test_read_format_iso_zisofs_overflow.iso.uu
+${PACKAGE}FILES+=	test_read_format_iso_zisofs.iso.Z.uu
+${PACKAGE}FILES+=	test_read_format_lha_amiga_script.lha.uu
+${PACKAGE}FILES+=	test_read_format_lha_bugfix_0.lzh.uu
+${PACKAGE}FILES+=	test_read_format_lha_filename_cp932.lzh.uu
+${PACKAGE}FILES+=	test_read_format_lha_filename_utf16.lzh.uu
+${PACKAGE}FILES+=	test_read_format_lha_header0.lzh.uu
+${PACKAGE}FILES+=	test_read_format_lha_header1.lzh.uu
+${PACKAGE}FILES+=	test_read_format_lha_header2.lzh.uu
+${PACKAGE}FILES+=	test_read_format_lha_header3.lzh.uu
+${PACKAGE}FILES+=	test_read_format_lha_lh0.lzh.uu
+${PACKAGE}FILES+=	test_read_format_lha_lh6.lzh.uu
+${PACKAGE}FILES+=	test_read_format_lha_lh7.lzh.uu
+${PACKAGE}FILES+=	test_read_format_lha_oversize_header.lzh.uu
+${PACKAGE}FILES+=	test_read_format_lha_symlink_missing_target.lzh.uu
+${PACKAGE}FILES+=	test_read_format_lha_withjunk.lzh.uu
+${PACKAGE}FILES+=	test_read_format_mtree.mtree.uu
+${PACKAGE}FILES+=	test_read_format_mtree_crash747.mtree.bz2.uu
+${PACKAGE}FILES+=	test_read_format_mtree_nomagic.mtree.uu
+${PACKAGE}FILES+=	test_read_format_mtree_nomagic2.mtree.uu
+${PACKAGE}FILES+=	test_read_format_mtree_nomagic3.mtree.uu
+${PACKAGE}FILES+=	test_read_format_mtree_noprint.mtree.uu
+${PACKAGE}FILES+=	test_read_format_rar.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar_binary_data.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar_compress_best.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar_compress_normal.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar_encryption_data.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar_encryption_header.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar_encryption_partially.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar_endarc_huge.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar_filter.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar_filter_incomplete_block.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar_invalid1.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar_multi_lzss_blocks.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar_multivolume.part0001.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar_multivolume.part0002.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar_multivolume.part0003.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar_multivolume.part0004.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar_newsub_huge.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar_newsub_rr_over_1m.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar_noeof.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar_overflow.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar_ppmd_lzss_conversion.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar_ppmd_use_after_free.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar_ppmd_use_after_free2.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar_seek_data_cursor0.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar_sfx.exe.uu
+${PACKAGE}FILES+=	test_read_format_rar_subblock.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar_symlink_huge.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar_unbound_staticdata.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar_unicode.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar_windows.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar3_lowdist_reset.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar4_encrypted.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar4_encrypted_filenames.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar4_solid_encrypted.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar4_solid_encrypted_filenames.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_arm.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_arm_filter_on_window_boundary.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_bad_tables.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_bad_window_sz_in_mltarc_file.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_data_ready_pointer_leak.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_blake2.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_block_size_is_too_small.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_bytes_remaining_underflow.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_compressed.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_decode_number_out_of_bounds_read.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_different_solid_window_size.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_different_window_size.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_different_winsize_on_merge.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_dirdata.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_distance_overflow.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_encrypted_filenames.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_encrypted.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_extra_data_size_toolong.rar.Z.uu
+${PACKAGE}FILES+=	test_read_format_rar5_extra_field_underflow.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_extra_field_version.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_fileattr.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_group_name_toolong.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_hardlink.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_invalid_dict_reference.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_invalid_hash_valid_htime_exfld.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_leftshift1.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_leftshift2.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_loop_bug.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_main_block_extra_bytes.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_multiarchive.part01.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_multiarchive.part02.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_multiarchive.part03.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_multiarchive.part04.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_multiarchive.part05.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_multiarchive.part06.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_multiarchive.part07.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_multiarchive.part08.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_multiarchive_solid.part01.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_multiarchive_solid.part02.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_multiarchive_solid.part03.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_multiarchive_solid.part04.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_multiple_files.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_multiple_files_solid.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_nonempty_dir_stream.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_only_crypt_exfld.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_owner.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_owner_name_toolong.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_readtables_overflow.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_redir_overflow.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_redir_varint_2byte.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_sfx.exe.uu
+${PACKAGE}FILES+=	test_read_format_rar5_skip_block_extra_bytes.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_solid_encrypted.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_solid_encrypted_filenames.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_solid.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_stored.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_stored_manyfiles.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_symlink.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_truncated_huff.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_unicode.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_unpacked_size_exceeds_declared.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_unsupported_exfld.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_win32.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_window_buf_and_size_desync.rar.uu
+${PACKAGE}FILES+=	test_read_format_rar5_zip_in_rar.rar.uu
+${PACKAGE}FILES+=	test_read_format_raw.bufr.uu
+${PACKAGE}FILES+=	test_read_format_raw.data.Z.uu
+${PACKAGE}FILES+=	test_read_format_raw.data.gz.uu
+${PACKAGE}FILES+=	test_read_format_raw.data.uu
+${PACKAGE}FILES+=	test_read_format_tar_V_negative_size.tar.uu
+${PACKAGE}FILES+=	test_read_format_tar_acl_oob_read.tar.uu
+${PACKAGE}FILES+=	test_read_format_tar_concatenated.tar.uu
+${PACKAGE}FILES+=	test_read_format_tar_empty_filename.tar.uu
+${PACKAGE}FILES+=	test_read_format_tar_empty_with_gnulabel.tar.uu
+${PACKAGE}FILES+=	test_read_format_tar_empty_pax.tar.Z.uu
+${PACKAGE}FILES+=	test_read_format_tar_filename_koi8r.tar.Z.uu
+${PACKAGE}FILES+=	test_read_format_tar_invalid_pax_size.tar.uu
+${PACKAGE}FILES+=	test_read_format_tar_mac_metadata_1.tar.uu
+${PACKAGE}FILES+=	test_read_format_tar_pax_g_large.tar.uu
+${PACKAGE}FILES+=	test_read_format_tar_pax_global_header.tar.uu
+${PACKAGE}FILES+=	test_read_format_tar_pax_global_header_ignorable.tar.uu
+${PACKAGE}FILES+=	test_read_format_tar_pax_large_attr.tar.Z.uu
+${PACKAGE}FILES+=	test_read_format_tar_pax_negative_time.tar.uu
+${PACKAGE}FILES+=	test_read_format_tar_pax_sun_holesdata.tar.uu
+${PACKAGE}FILES+=	test_read_format_tar_pax_timestamps.tar.uu
+${PACKAGE}FILES+=	test_read_format_tar_timestamp_overflow.tar.uu
+${PACKAGE}FILES+=	test_read_format_ustar_filename_cp866.tar.Z.uu
+${PACKAGE}FILES+=	test_read_format_ustar_filename_eucjp.tar.Z.uu
+${PACKAGE}FILES+=	test_read_format_ustar_filename_koi8r.tar.Z.uu
+${PACKAGE}FILES+=	test_read_format_warc_incomplete.warc.uu
+${PACKAGE}FILES+=	test_read_format_warc_uri_nul.warc.uu
+${PACKAGE}FILES+=	test_read_format_warc.warc.uu
+${PACKAGE}FILES+=	test_read_format_xar_atou64_overread.xar.uu
+${PACKAGE}FILES+=	test_read_format_xar_base64_oob.xar.uu
+${PACKAGE}FILES+=	test_read_format_xar_doublelink.xar.uu
+${PACKAGE}FILES+=	test_read_format_xar_duplicate_filename_node.xar.uu
+${PACKAGE}FILES+=	test_read_format_xar_empty_xattr.xar.uu
+${PACKAGE}FILES+=	test_read_format_xar_large_mode.xar.uu
+${PACKAGE}FILES+=	test_read_format_xar_parse_time_overread.xar.uu
+${PACKAGE}FILES+=	test_read_format_xar_toc_premature_stream_end.xar.uu
+${PACKAGE}FILES+=	test_read_format_xar_toc_premature_stream_end_control.xar.uu
+${PACKAGE}FILES+=	test_read_format_zip.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_7075_utf8_paths.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_7z_deflate.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_7z_lzma.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_bz2_hang.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_bzip2.zipx.uu
+${PACKAGE}FILES+=	test_read_format_zip_bzip2_multi.zipx.uu
+${PACKAGE}FILES+=	test_read_format_zip_comment_stored_1.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_comment_stored_2.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_encryption_data.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_encryption_header.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_encryption_partially.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_extra_padding.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_filename_cp866.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_filename_cp932.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_filename_koi8r.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_filename_utf8_jp.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_filename_utf8_ru.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_filename_utf8_ru2.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_high_compression.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_jar.jar.uu
+${PACKAGE}FILES+=	test_read_format_zip_length_at_end.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_lzma_alone_leak.zipx.uu
+${PACKAGE}FILES+=	test_read_format_zip_lzma.zipx.uu
+${PACKAGE}FILES+=	test_read_format_zip_lzma_alone_large_size.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_lzma_multi.zipx.uu
+${PACKAGE}FILES+=	test_read_format_zip_lzma_stream_end.zipx.uu
+${PACKAGE}FILES+=	test_read_format_zip_mac_metadata.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_malformed1.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_msdos.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_nested.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_nofiletype.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_padded1.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_padded2.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_padded3.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_pkware_unix.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_ppmd8.zipx.uu
+${PACKAGE}FILES+=	test_read_format_zip_ppmd8_aes256_streaming.zipx.uu
+${PACKAGE}FILES+=	test_read_format_zip_ppmd8_crash_1.zipx.uu
+${PACKAGE}FILES+=	test_read_format_zip_ppmd8_crash_2.zipx.uu
+${PACKAGE}FILES+=	test_read_format_zip_ppmd8_multi.zipx.uu
+${PACKAGE}FILES+=	test_read_format_zip_sfx.uu
+${PACKAGE}FILES+=	test_read_format_zip_size_exceeds_declared_deflate.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_size_exceeds_declared_stored.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_symlink.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_symlink_unsupported_compression.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_traditional_encryption_data.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_uncompressed_size_off_by_4gib.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_ux.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_with_invalid_traditional_eocd.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_winzip_aes128.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_winzip_aes256.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_winzip_aes256_large.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_winzip_aes256_large_bzip2.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_winzip_aes256_large_lzma.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_winzip_aes256_large_ppmd.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_winzip_aes256_large_xz.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_winzip_aes256_large_zstd.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_winzip_aes256_stored.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_xz_multi.zipx.uu
+${PACKAGE}FILES+=	test_read_format_zip_zip64a.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_zip64b.zip.uu
+${PACKAGE}FILES+=	test_read_format_zip_zipx_lzma_oom.zipx.uu
+${PACKAGE}FILES+=	test_read_format_zip_zstd.zipx.uu
+${PACKAGE}FILES+=	test_read_format_zip_zstd_multi.zipx.uu
+${PACKAGE}FILES+=	test_read_large_splitted_rar_aa.uu
+${PACKAGE}FILES+=	test_read_large_splitted_rar_ab.uu
+${PACKAGE}FILES+=	test_read_large_splitted_rar_ac.uu
+${PACKAGE}FILES+=	test_read_large_splitted_rar_ad.uu
+${PACKAGE}FILES+=	test_read_large_splitted_rar_ae.uu
+${PACKAGE}FILES+=	test_read_pax_empty_val_no_nl.tar.uu
+${PACKAGE}FILES+=	test_read_pax_xattr_rht_security_selinux.tar.uu
+${PACKAGE}FILES+=	test_read_pax_xattr_schily.tar.uu
+${PACKAGE}FILES+=	test_read_splitted_rar_aa.uu
+${PACKAGE}FILES+=	test_read_splitted_rar_ab.uu
+${PACKAGE}FILES+=	test_read_splitted_rar_ac.uu
+${PACKAGE}FILES+=	test_read_splitted_rar_ad.uu
+${PACKAGE}FILES+=	test_read_too_many_filters.gz.uu
+${PACKAGE}FILES+=	test_splitted_rar_seek_support_aa.uu
+${PACKAGE}FILES+=	test_splitted_rar_seek_support_ab.uu
+${PACKAGE}FILES+=	test_splitted_rar_seek_support_ac.uu
+${PACKAGE}FILES+=	test_write_disk_appledouble.cpio.gz.uu
+${PACKAGE}FILES+=	test_write_disk_appledouble_zip.zip.uu
+${PACKAGE}FILES+=	test_write_disk_hfs_compression.tgz.uu
+${PACKAGE}FILES+=	test_write_disk_mac_metadata.tar.gz.uu
+${PACKAGE}FILES+=	test_write_disk_no_hfs_compression.tgz.uu
+${PACKAGE}FILES+=	test_write_format_iso9660_joliet_overflow.bin.uu
+${PACKAGE}FILES+=	test_write_format_iso9660_null_deref.bin.uu
+${PACKAGE}FILES+=	test_write_format_iso9660_underflow.bin.uu
+${PACKAGE}FILES+=	test_write_format_mtree_null_deref.bin.uu
+${PACKAGE}FILES+=	test_write_format_xar_strcpy_overlap.bin.uu
+${PACKAGE}FILES+=	test_write_format_xar_underflow.bin.uu
+
+.include <bsd.test.mk>

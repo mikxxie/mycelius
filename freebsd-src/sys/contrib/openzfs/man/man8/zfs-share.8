@@ -1,0 +1,91 @@
+.\" SPDX-License-Identifier: CDDL-1.0
+.\"
+.\" This file and its contents are supplied under the terms of the
+.\" Common Development and Distribution License ("CDDL"), version 1.0.
+.\" You may only use this file in accordance with the terms of version
+.\" 1.0 of the CDDL.
+.\"
+.\" A full copy of the text of the CDDL should have accompanied this
+.\" source.  A copy of the CDDL is also available via the Internet at
+.\" https://opensource.org/license/CDDL-1.0.
+.\"
+.\" Copyright (c) 2009 Sun Microsystems, Inc. All Rights Reserved.
+.\" Copyright 2011 Joshua M. Clulow <josh@sysmgr.org>
+.\" Copyright (c) 2011, 2019 by Delphix. All rights reserved.
+.\" Copyright (c) 2013 by Saso Kiselkov. All rights reserved.
+.\" Copyright (c) 2014, Joyent, Inc. All rights reserved.
+.\" Copyright (c) 2014 by Adam Stevko. All rights reserved.
+.\" Copyright (c) 2014 Integros [integros.com]
+.\" Copyright 2019 Richard Laager. All rights reserved.
+.\" Copyright 2018 Nexenta Systems, Inc.
+.\" Copyright 2019 Joyent, Inc.
+.\"
+.Dd July 11, 2022
+.Dt ZFS-SHARE 8
+.Os
+.
+.Sh NAME
+.Nm zfs-share
+.Nd share and unshare ZFS filesystems
+.Sh SYNOPSIS
+.Nm zfs
+.Cm share
+.Op Fl l
+.Fl a Ns | Ns Ar filesystem
+.Nm zfs
+.Cm unshare
+.Fl a Ns | Ns Ar filesystem Ns | Ns Ar mountpoint
+.
+.Sh DESCRIPTION
+.Bl -tag -width ""
+.It Xo
+.Nm zfs
+.Cm share
+.Op Fl l
+.Fl a Ns | Ns Ar filesystem
+.Xc
+Shares available ZFS file systems.
+.Bl -tag -width "-a"
+.It Fl l
+Load keys for encrypted filesystems as they are being mounted.
+This is equivalent to executing
+.Nm zfs Cm load-key
+on each encryption root before mounting it.
+Note that if a filesystem has
+.Sy keylocation Ns = Ns Sy prompt ,
+this will cause the terminal to interactively block after asking for the key.
+.It Fl a
+Share all available ZFS file systems.
+Invoked automatically as part of the boot process.
+.It Ar filesystem
+Share the specified filesystem according to the
+.Sy sharenfs
+and
+.Sy sharesmb
+properties.
+File systems are shared when the
+.Sy sharenfs
+or
+.Sy sharesmb
+property is set.
+.El
+.It Xo
+.Nm zfs
+.Cm unshare
+.Fl a Ns | Ns Ar filesystem Ns | Ns Ar mountpoint
+.Xc
+Unshares currently shared ZFS file systems.
+.Bl -tag -width "-a"
+.It Fl a
+Unshare all available ZFS file systems.
+Invoked automatically as part of the shutdown process.
+.It Ar filesystem Ns | Ns Ar mountpoint
+Unshare the specified filesystem.
+The command can also be given a path to a ZFS file system shared on the system.
+.El
+.El
+.
+.Sh SEE ALSO
+.Xr exports 5 ,
+.Xr smb.conf 5 ,
+.Xr zfsprops 7

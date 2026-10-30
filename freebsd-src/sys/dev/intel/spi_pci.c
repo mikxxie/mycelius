@@ -1,0 +1,234 @@
+/*-
+ * SPDX-License-Identifier: BSD-2-Clause
+ *
+ * Copyright (c) 2021 Val Packett <val@packett.cool>
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+
+#include "opt_acpi.h"
+#include "opt_pci.h"
+
+#include <sys/param.h>
+#include <sys/bus.h>
+#include <sys/kernel.h>
+#include <sys/module.h>
+#include <sys/proc.h>
+#include <sys/rman.h>
+
+#include <dev/intel/spi.h>
+#include <dev/pci/pcireg.h>
+#include <dev/pci/pcivar.h>
+
+#include "spibus_if.h"
+
+static struct intelspi_pci_device {
+	uint32_t devid;
+	enum intelspi_vers vers;
+	const char *desc;
+} intelspi_pci_devices[] = {
+	{ 0x02aa8086, SPI_SUNRISEPOINT, "Intel Comet Lake SPI Controller-0" },
+	{ 0x02ab8086, SPI_SUNRISEPOINT, "Intel Comet Lake SPI Controller-1" },
+	{ 0x02fb8086, SPI_SUNRISEPOINT, "Intel Comet Lake SPI Controller-2" },
+	{ 0x06aa8086, SPI_SUNRISEPOINT, "Intel Comet Lake SPI Controller-3" },
+	{ 0x06ab8086, SPI_SUNRISEPOINT, "Intel Comet Lake SPI Controller-4" },
+	{ 0x06fb8086, SPI_SUNRISEPOINT, "Intel Comet Lake SPI Controller-5" },
+	{ 0x0ac28086, SPI_SUNRISEPOINT, "Intel Broxton SPI Controller-0" },
+	{ 0x0ac48086, SPI_SUNRISEPOINT, "Intel Broxton SPI Controller-1" },
+	{ 0x0ac68086, SPI_SUNRISEPOINT, "Intel Broxton SPI Controller-2" },
+	{ 0x1ac28086, SPI_SUNRISEPOINT, "Intel Broxton SPI Controller-3" },
+	{ 0x1ac48086, SPI_SUNRISEPOINT, "Intel Broxton SPI Controller-4" },
+	{ 0x1ac68086, SPI_SUNRISEPOINT, "Intel Broxton SPI Controller-5" },
+	{ 0x31c28086, SPI_SUNRISEPOINT, "Intel Gemini Lake SPI Controller-0" },
+	{ 0x31c48086, SPI_SUNRISEPOINT, "Intel Gemini Lake SPI Controller-1" },
+	{ 0x31c68086, SPI_SUNRISEPOINT, "Intel Gemini Lake SPI Controller-2" },
+	{ 0x34aa8086, SPI_SUNRISEPOINT, "Intel Ice Lake SPI Controller-0" },
+	{ 0x34ab8086, SPI_SUNRISEPOINT, "Intel Ice Lake SPI Controller-1" },
+	{ 0x34fb8086, SPI_SUNRISEPOINT, "Intel Ice Lake SPI Controller-2" },
+	{ 0x43aa8086, SPI_SUNRISEPOINT, "Intel Tiger Lake SPI Controller-0" },
+	{ 0x43ab8086, SPI_SUNRISEPOINT, "Intel Tiger Lake SPI Controller-1" },
+	{ 0x43fb8086, SPI_SUNRISEPOINT, "Intel Tiger Lake SPI Controller-2" },
+	{ 0x43fd8086, SPI_SUNRISEPOINT, "Intel Tiger Lake SPI Controller-3" },
+	{ 0x4b2a8086, SPI_SUNRISEPOINT, "Intel Elkhart Lake SPI Controller-0" },
+	{ 0x4b2b8086, SPI_SUNRISEPOINT, "Intel Elkhart Lake SPI Controller-1" },
+	{ 0x4b378086, SPI_SUNRISEPOINT, "Intel Elkhart Lake SPI Controller-2" },
+	{ 0x4d278086, SPI_SUNRISEPOINT, "Intel Wildcat Lake SPI Controller-0" },
+	{ 0x4d308086, SPI_SUNRISEPOINT, "Intel Wildcat Lake SPI Controller-1" },
+	{ 0x4d468086, SPI_SUNRISEPOINT, "Intel Wildcat Lake SPI Controller-2" },
+	{ 0x4daa8086, SPI_SUNRISEPOINT, "Intel Jasper Lake SPI Controller-0" },
+	{ 0x4dab8086, SPI_SUNRISEPOINT, "Intel Jasper Lake SPI Controller-1" },
+	{ 0x4dfb8086, SPI_SUNRISEPOINT, "Intel Jasper Lake SPI Controller-2" },
+	{ 0x51aa8086, SPI_SUNRISEPOINT, "Intel Alder Lake SPI Controller-0" },
+	{ 0x51ab8086, SPI_SUNRISEPOINT, "Intel Alder Lake SPI Controller-1" },
+	{ 0x51fb8086, SPI_SUNRISEPOINT, "Intel Alder Lake SPI Controller-2" },
+	{ 0x54aa8086, SPI_SUNRISEPOINT, "Intel Alder Lake SPI Controller-3" },
+	{ 0x54ab8086, SPI_SUNRISEPOINT, "Intel Alder Lake SPI Controller-4" },
+	{ 0x54fb8086, SPI_SUNRISEPOINT, "Intel Alder Lake SPI Controller-5" },
+	{ 0x5ac28086, SPI_SUNRISEPOINT, "Intel Apollo Lake SPI Controller-0" },
+	{ 0x5ac48086, SPI_SUNRISEPOINT, "Intel Apollo Lake SPI Controller-1" },
+	{ 0x5ac68086, SPI_SUNRISEPOINT, "Intel Apollo Lake SPI Controller-2" },
+	{ 0x6e2a8086, SPI_SUNRISEPOINT, "Intel Nova Lake SPI Controller-0" },
+	{ 0x6e2b8086, SPI_SUNRISEPOINT, "Intel Nova Lake SPI Controller-1" },
+	{ 0x6e5e8086, SPI_SUNRISEPOINT, "Intel Nova Lake SPI Controller-2" },
+	{ 0x77278086, SPI_SUNRISEPOINT, "Intel Arrow Lake SPI Controller-0" },
+	{ 0x77308086, SPI_SUNRISEPOINT, "Intel Arrow Lake SPI Controller-1" },
+	{ 0x77468086, SPI_SUNRISEPOINT, "Intel Arrow Lake SPI Controller-2" },
+	{ 0x7a2a8086, SPI_SUNRISEPOINT, "Intel Raptor Lake SPI Controller-0" },
+	{ 0x7a2b8086, SPI_SUNRISEPOINT, "Intel Raptor Lake SPI Controller-1" },
+	{ 0x7a798086, SPI_SUNRISEPOINT, "Intel Raptor Lake SPI Controller-2" },
+	{ 0x7a7b8086, SPI_SUNRISEPOINT, "Intel Raptor Lake SPI Controller-3" },
+	{ 0x7aaa8086, SPI_SUNRISEPOINT, "Intel Alder Lake SPI Controller-6" },
+	{ 0x7aab8086, SPI_SUNRISEPOINT, "Intel Alder Lake SPI Controller-7" },
+	{ 0x7af98086, SPI_SUNRISEPOINT, "Intel Alder Lake SPI Controller-8" },
+	{ 0x7afb8086, SPI_SUNRISEPOINT, "Intel Alder Lake SPI Controller-9" },
+	{ 0x7e278086, SPI_SUNRISEPOINT, "Intel Meteor Lake SPI Controller-0" },
+	{ 0x7e308086, SPI_SUNRISEPOINT, "Intel Meteor Lake SPI Controller-1" },
+	{ 0x7e468086, SPI_SUNRISEPOINT, "Intel Meteor Lake SPI Controller-2" },
+	{ 0x7f2a8086, SPI_SUNRISEPOINT, "Intel Meteor Lake SPI Controller-3" },
+	{ 0x7f2b8086, SPI_SUNRISEPOINT, "Intel Meteor Lake SPI Controller-4" },
+	{ 0x7f5e8086, SPI_SUNRISEPOINT, "Intel Meteor Lake SPI Controller-5" },
+	{ 0x7f5f8086, SPI_SUNRISEPOINT, "Intel Meteor Lake SPI Controller-6" },
+	{ 0x98aa8086, SPI_SUNRISEPOINT, "Intel Lakefield SPI Controller" },
+	{ 0x9c658086, SPI_LYNXPOINT, "Intel Lynx Point-LP SPI Controller-0" },
+	{ 0x9c668086, SPI_LYNXPOINT, "Intel Lynx Point-LP SPI Controller-1" },
+	{ 0x9ce58086, SPI_LYNXPOINT, "Intel Wildcat Point SPI Controller-0" },
+	{ 0x9ce68086, SPI_LYNXPOINT, "Intel Wildcat Point SPI Controller-1" },
+	{ 0x9d298086, SPI_SUNRISEPOINT, "Intel Sunrise Point-LP SPI Controller-0" },
+	{ 0x9d2a8086, SPI_SUNRISEPOINT, "Intel Sunrise Point-LP SPI Controller-1" },
+	{ 0x9daa8086, SPI_SUNRISEPOINT, "Intel Cannon Lake SPI Controller-0" },
+	{ 0x9dab8086, SPI_SUNRISEPOINT, "Intel Cannon Lake SPI Controller-1" },
+	{ 0x9dfb8086, SPI_SUNRISEPOINT, "Intel Cannon Lake SPI Controller-2" },
+	{ 0xa0aa8086, SPI_SUNRISEPOINT, "Intel Tiger Lake SPI Controller-4" },
+	{ 0xa0ab8086, SPI_SUNRISEPOINT, "Intel Tiger Lake SPI Controller-5" },
+	{ 0xa0de8086, SPI_SUNRISEPOINT, "Intel Tiger Lake SPI Controller-6" },
+	{ 0xa0df8086, SPI_SUNRISEPOINT, "Intel Tiger Lake SPI Controller-7" },
+	{ 0xa0fb8086, SPI_SUNRISEPOINT, "Intel Tiger Lake SPI Controller-8" },
+	{ 0xa0fd8086, SPI_SUNRISEPOINT, "Intel Tiger Lake SPI Controller-9" },
+	{ 0xa0fe8086, SPI_SUNRISEPOINT, "Intel Tiger Lake SPI Controller-10" },
+	{ 0xa1298086, SPI_SUNRISEPOINT, "Intel Sunrise Point-H SPI Controller-0" },
+	{ 0xa12a8086, SPI_SUNRISEPOINT, "Intel Sunrise Point-H SPI Controller-1" },
+	{ 0xa2a98086, SPI_SUNRISEPOINT, "Intel Kaby Lake-H SPI Controller-0" },
+	{ 0xa2aa8086, SPI_SUNRISEPOINT, "Intel Kaby Lake-H SPI Controller-1" },
+	{ 0xa32a8086, SPI_SUNRISEPOINT, "Intel Cannon Lake SPI Controller-3" },
+	{ 0xa32b8086, SPI_SUNRISEPOINT, "Intel Cannon Lake SPI Controller-4" },
+	{ 0xa37b8086, SPI_SUNRISEPOINT, "Intel Cannon Lake SPI Controller-5" },
+	{ 0xa3a98086, SPI_SUNRISEPOINT, "Intel Comet Lake-V SPI Controller-0" },
+	{ 0xa3aa8086, SPI_SUNRISEPOINT, "Intel Comet Lake-V SPI Controller-1" },
+	{ 0xa8278086, SPI_SUNRISEPOINT, "Intel Lunar Lake SPI Controller-0" },
+	{ 0xa8308086, SPI_SUNRISEPOINT, "Intel Lunar Lake SPI Controller-1" },
+	{ 0xa8468086, SPI_SUNRISEPOINT, "Intel Lunar Lake SPI Controller-2" },
+	{ 0xd3278086, SPI_SUNRISEPOINT, "Intel Nova Lake SPI Controller-3" },
+	{ 0xd3308086, SPI_SUNRISEPOINT, "Intel Nova Lake SPI Controller-4" },
+	{ 0xd3478086, SPI_SUNRISEPOINT, "Intel Nova Lake SPI Controller-5" },
+	{ 0xe3278086, SPI_SUNRISEPOINT, "Intel Panther Lake SPI Controller-0" },
+	{ 0xe3308086, SPI_SUNRISEPOINT, "Intel Panther Lake SPI Controller-1" },
+	{ 0xe3468086, SPI_SUNRISEPOINT, "Intel Panther Lake SPI Controller-2" },
+	{ 0xe4278086, SPI_SUNRISEPOINT, "Intel Panther Lake SPI Controller-3" },
+	{ 0xe4308086, SPI_SUNRISEPOINT, "Intel Panther Lake SPI Controller-4" },
+	{ 0xe4468086, SPI_SUNRISEPOINT, "Intel Panther Lake SPI Controller-5" },
+};
+
+static int
+intelspi_pci_probe(device_t dev)
+{
+	struct intelspi_softc *sc = device_get_softc(dev);
+	uint32_t devid = pci_get_devid(dev);
+	int i;
+
+	for (i = 0; i < nitems(intelspi_pci_devices); i++) {
+		if (intelspi_pci_devices[i].devid == devid) {
+			sc->sc_vers = intelspi_pci_devices[i].vers;
+			/* The PCI device is listed in ACPI too.
+			 * Not that we use the handle for anything... */
+			sc->sc_handle = acpi_get_handle(dev);
+			device_set_desc(dev, intelspi_pci_devices[i].desc);
+			return (BUS_PROBE_DEFAULT);
+		}
+	}
+
+	return (ENXIO);
+}
+
+static int
+intelspi_pci_attach(device_t dev)
+{
+	struct intelspi_softc *sc = device_get_softc(dev);
+
+	sc->sc_mem_rid = PCIR_BAR(0);
+	sc->sc_irq_rid = 0;
+	if (pci_alloc_msi(dev, &sc->sc_irq_rid)) {
+		device_printf(dev, "Using MSI\n");
+	}
+
+	return (intelspi_attach(dev));
+}
+
+static int
+intelspi_pci_detach(device_t dev)
+{
+	struct intelspi_softc *sc = device_get_softc(dev);
+	int err;
+
+	err = intelspi_detach(dev);
+	if (err)
+		return (err);
+
+	if (sc->sc_irq_rid != 0)
+		pci_release_msi(dev);
+
+	return (0);
+}
+
+static device_method_t intelspi_pci_methods[] = {
+	/* Device interface */
+	DEVMETHOD(device_probe, intelspi_pci_probe),
+	DEVMETHOD(device_attach, intelspi_pci_attach),
+	DEVMETHOD(device_detach, intelspi_pci_detach),
+	DEVMETHOD(device_suspend, intelspi_suspend),
+	DEVMETHOD(device_resume, intelspi_resume),
+
+	/* Bus interface */
+	DEVMETHOD(bus_setup_intr, bus_generic_setup_intr),
+	DEVMETHOD(bus_teardown_intr, bus_generic_teardown_intr),
+	DEVMETHOD(bus_alloc_resource, bus_generic_alloc_resource),
+	DEVMETHOD(bus_release_resource, bus_generic_release_resource),
+	DEVMETHOD(bus_activate_resource, bus_generic_activate_resource),
+	DEVMETHOD(bus_deactivate_resource, bus_generic_deactivate_resource),
+	DEVMETHOD(bus_adjust_resource, bus_generic_adjust_resource),
+
+	/* SPI interface */
+	DEVMETHOD(spibus_transfer, intelspi_transfer),
+
+	DEVMETHOD_END
+};
+
+static driver_t intelspi_pci_driver = {
+	"spi",
+	intelspi_pci_methods,
+	sizeof(struct intelspi_softc),
+};
+
+DRIVER_MODULE(intelspi, pci, intelspi_pci_driver, 0, 0);
+MODULE_DEPEND(intelspi, pci, 1, 1, 1);
+MODULE_DEPEND(intelspi, spibus, 1, 1, 1);
+MODULE_PNP_INFO("W32:vendor/device", pci, intelspi, intelspi_pci_devices,
+    nitems(intelspi_pci_devices));

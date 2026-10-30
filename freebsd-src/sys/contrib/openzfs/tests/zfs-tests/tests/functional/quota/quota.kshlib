@@ -1,0 +1,95 @@
+# SPDX-License-Identifier: CDDL-1.0
+#
+# This file and its contents are supplied under the terms of the
+# Common Development and Distribution License ("CDDL"), version 1.0.
+# You may only use this file in accordance with the terms of version
+# 1.0 of the CDDL.
+#
+# A full copy of the text of the CDDL should have accompanied this
+# source.  A copy of the CDDL is also available via the Internet at
+# https://opensource.org/license/CDDL-1.0.
+#
+
+#
+# Copyright 2007 Sun Microsystems, Inc.  All rights reserved.
+# Use is subject to license terms.
+#
+
+#
+# Copyright (c) 2013, 2016 by Delphix. All rights reserved.
+#
+
+. $STF_SUITE/tests/functional/quota/quota.cfg
+
+# BLOCK_SIZE, QUOTA_VALUE and TOLERANCE set in quota.cfg
+if is_linux; then
+	readonly EDQUOT=122
+elif is_freebsd; then
+	readonly EDQUOT=69
+else
+	readonly EDQUOT=49
+fi
+
+#
+# Function to fill the quota of a zfs filesystem
+#
+# $1 - The File system or container to fill.
+# $2 - The mountpoint to use.
+#
+function fill_quota
+{
+	typeset FILESYSTEM="$1"
+	typeset MNTPT="$2"
+
+	log_must zfs set quota=$QUOTA_VALUE $FILESYSTEM
+
+	typeset -i write_size=0
+	(( write_size = 2 * QUOTA_VALUE ))
+
+	typeset -i zret=0
+	file_write -o create -f $MNTPT/$TESTFILE1 -b $BLOCK_SIZE \
+		 -c $write_size -d 0
+	zret=$?
+    [[ $zret -ne $EDQUOT ]] && \
+        log_fail "Returned error code: $zret. Expected: $EDQUOT."
+
+	typeset -i file_size=`ls -lsk $MNTPT/$TESTFILE1 | awk '{ print $1 }'`
+	typeset -i limit=0
+	(( file_size = file_size * 1024 ))
+	(( limit = QUOTA_VALUE + TOLERANCE ))
+	(( file_size > limit )) && \
+	    log_fail "File was created larger than the quota value, aborting!!!"
+	return 0
+}
+
+#
+# Function attempts to write another file in a ZFS filesystem
+# that has already filled its quota
+#
+function exceed_quota
+{
+	typeset FILESYSTEM="$1"
+	typeset MNTPT="$2"
+
+	log_must fill_quota $FILESYSTEM $MNTPT
+	typeset -i write_size=0
+        (( write_size = 2 * QUOTA_VALUE ))
+	typeset -i zret=0
+	#
+	# Writing a file without API to access return code
+	#
+	log_note "Creating a file in a FS that has already exceeded its quota"
+	file_write -o create -f $MNTPT/$TESTFILE2 \
+		-b $BLOCK_SIZE -c $write_size -d 0
+	zret=$?
+	[[ $zret -ne $EDQUOT ]] && \
+	    log_fail "Returned error code: $zret. Expected: $EDQUOT."
+	return 0
+}
+
+function reset_quota
+{
+	typeset FILESYSTEM="$1"
+
+	log_must zfs set quota=none $FILESYSTEM
+}

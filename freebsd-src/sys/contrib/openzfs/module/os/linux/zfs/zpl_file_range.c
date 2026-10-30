@@ -1,0 +1,291 @@
+// SPDX-License-Identifier: CDDL-1.0
+/*
+ * This file and its contents are supplied under the terms of the
+ * Common Development and Distribution License ("CDDL"), version 1.0.
+ * You may only use this file in accordance with the terms of version
+ * 1.0 of the CDDL.
+ *
+ * A full copy of the text of the CDDL should have accompanied this
+ * source.  A copy of the CDDL is also available via the Internet at
+ * https://opensource.org/license/CDDL-1.0.
+ */
+/*
+ * Copyright (c) 2023, Klara Inc.
+ */
+
+#ifdef CONFIG_COMPAT
+#include <linux/compat.h>
+#endif
+#include <linux/fs.h>
+#ifdef HAVE_VFS_SPLICE_COPY_FILE_RANGE
+#include <linux/splice.h>
+#endif
+#include <sys/file.h>
+#include <sys/zfs_znode.h>
+#include <sys/zfs_vnops.h>
+#include <sys/zfeature.h>
+
+/*
+ * Take the source and destination inode locks for a remap (clone or dedupe).
+ *
+ * Since Linux 4.20 the VFS does not lock the inodes for ->remap_file_range();
+ * the filesystem must, and it must impose an order on the two, or two remaps
+ * running in opposite directions deadlock: each would hold one inode and wait
+ * for the other, and an rwsem writer queues behind the existing readers.  Order
+ * by inode address, as btrfs does.  The destination is taken exclusively and
+ * the source shared, so concurrent remaps out of one hot source still proceed.
+ * Only the acquisition needs the order: releasing never waits, so the unlock
+ * side does not mirror it.
+ */
+static void
+zpl_remap_lock_two(struct inode *src_i, struct inode *dst_i)
+{
+	if (src_i == dst_i) {
+		spl_inode_lock(dst_i);
+	} else if (src_i < dst_i) {
+		spl_inode_lock_shared(src_i);
+		spl_inode_lock(dst_i);
+	} else {
+		spl_inode_lock(dst_i);
+		spl_inode_lock_shared(src_i);
+	}
+}
+
+static void
+zpl_remap_unlock_two(struct inode *src_i, struct inode *dst_i)
+{
+	spl_inode_unlock(dst_i);
+	if (src_i != dst_i)
+		spl_inode_unlock_shared(src_i);
+}
+
+/*
+ * Clone part of a file via block cloning.
+ *
+ * Note that we are not required to update file offsets; the kernel will take
+ * care of that depending on how it was called.
+ */
+static ssize_t
+zpl_clone_file_range_impl(struct file *src_file, loff_t src_off,
+    struct file *dst_file, loff_t dst_off, size_t len)
+{
+	struct inode *src_i = file_inode(src_file);
+	struct inode *dst_i = file_inode(dst_file);
+	uint64_t src_off_o = (uint64_t)src_off;
+	uint64_t dst_off_o = (uint64_t)dst_off;
+	uint64_t len_o = (uint64_t)len;
+	cred_t *cr = CRED();
+	fstrans_cookie_t cookie;
+	int err;
+
+	if (!zfs_bclone_enabled)
+		return (-EOPNOTSUPP);
+
+	if (!spa_feature_is_enabled(
+	    dmu_objset_spa(ITOZSB(dst_i)->z_os), SPA_FEATURE_BLOCK_CLONING))
+		return (-EOPNOTSUPP);
+
+	zpl_remap_lock_two(src_i, dst_i);
+
+	crhold(cr);
+	cookie = spl_fstrans_mark();
+
+	err = -zfs_clone_range(ITOZ(src_i), &src_off_o, ITOZ(dst_i),
+	    &dst_off_o, &len_o, cr);
+
+	spl_fstrans_unmark(cookie);
+	crfree(cr);
+
+	zpl_remap_unlock_two(src_i, dst_i);
+
+	if (err < 0)
+		return (err);
+
+	return ((ssize_t)len_o);
+}
+
+#if defined(HAVE_VFS_REMAP_FILE_RANGE) || \
+	defined(HAVE_VFS_DEDUPE_FILE_RANGE)
+/*
+ * Logic shared by the FIDEDUPERANGE entry points.  Compare len bytes at
+ * src_off in src_file with dst_off in dst_file and, if they are identical,
+ * share the underlying blocks via zfs_dedupe_range().  Returns the number of
+ * bytes deduped, -EBADE if the ranges differ (which the VFS reports as
+ * FILE_DEDUPE_RANGE_DIFFERS), or another negative errno on failure.
+ */
+static ssize_t
+zpl_dedupe_file_range_impl(struct file *src_file, loff_t src_off,
+    struct file *dst_file, loff_t dst_off, size_t len, boolean_t can_shorten)
+{
+	struct inode *src_i = file_inode(src_file);
+	struct inode *dst_i = file_inode(dst_file);
+	uint64_t src_off_o = (uint64_t)src_off;
+	uint64_t dst_off_o = (uint64_t)dst_off;
+	uint64_t len_o = (uint64_t)len;
+	cred_t *cr = CRED();
+	fstrans_cookie_t cookie;
+	boolean_t same = B_FALSE;
+	int err;
+
+	if (!zfs_bclone_enabled)
+		return (-EOPNOTSUPP);
+
+	if (!spa_feature_is_enabled(
+	    dmu_objset_spa(ITOZSB(dst_i)->z_os), SPA_FEATURE_BLOCK_CLONING))
+		return (-EOPNOTSUPP);
+
+	zpl_remap_lock_two(src_i, dst_i);
+
+	crhold(cr);
+	cookie = spl_fstrans_mark();
+
+	err = -zfs_dedupe_range(ITOZ(src_i), src_off_o, ITOZ(dst_i),
+	    dst_off_o, &len_o, cr, can_shorten, &same);
+
+	spl_fstrans_unmark(cookie);
+	crfree(cr);
+
+	zpl_remap_unlock_two(src_i, dst_i);
+
+	if (err < 0)
+		return (err);
+
+	if (!same)
+		return (-EBADE);
+
+	return ((ssize_t)len_o);
+}
+#endif
+
+/*
+ * Entry point for copy_file_range(). Copy len bytes from src_off in src_file
+ * to dst_off in dst_file. We are permitted to do this however we like, so we
+ * try to just clone the blocks, and if we can't support it, fall back to the
+ * kernel's generic byte copy function.
+ */
+ssize_t
+zpl_copy_file_range(struct file *src_file, loff_t src_off,
+    struct file *dst_file, loff_t dst_off, size_t len, unsigned int flags)
+{
+	ssize_t ret;
+
+	/* Flags is reserved for future extensions and must be zero. */
+	if (flags != 0)
+		return (-EINVAL);
+
+	/* Try to do it via zfs_clone_range() and allow shortening. */
+	ret = zpl_clone_file_range_impl(src_file, src_off,
+	    dst_file, dst_off, len);
+
+#if defined(HAVE_VFS_GENERIC_COPY_FILE_RANGE)
+	/*
+	 * Since Linux 5.3 the filesystem driver is responsible for executing
+	 * an appropriate fallback, and a generic fallback function is provided.
+	 */
+	if (ret == -EOPNOTSUPP || ret == -EINVAL || ret == -EXDEV ||
+	    ret == -EAGAIN)
+		ret = generic_copy_file_range(src_file, src_off, dst_file,
+		    dst_off, len, flags);
+#elif defined(HAVE_VFS_SPLICE_COPY_FILE_RANGE)
+	/*
+	 * Since 6.8 the fallback function is called splice_copy_file_range
+	 * and has a slightly different signature.
+	 */
+	if (ret == -EOPNOTSUPP || ret == -EINVAL || ret == -EXDEV ||
+	    ret == -EAGAIN)
+		ret = splice_copy_file_range(src_file, src_off, dst_file,
+		    dst_off, len);
+#else
+	/*
+	 * Before Linux 5.3 the filesystem has to return -EOPNOTSUPP to signal
+	 * to the kernel that it should fallback to a content copy.
+	 */
+	if (ret == -EINVAL || ret == -EXDEV || ret == -EAGAIN)
+		ret = -EOPNOTSUPP;
+#endif /* HAVE_VFS_GENERIC_COPY_FILE_RANGE || HAVE_VFS_SPLICE_COPY_FILE_RANGE */
+
+	return (ret);
+}
+
+#ifdef HAVE_VFS_REMAP_FILE_RANGE
+/*
+ * Entry point for FICLONE/FICLONERANGE/FIDEDUPERANGE.
+ *
+ * FICLONE and FICLONERANGE are basically the same as copy_file_range(), except
+ * that they must clone - they cannot fall back to copying. FICLONE is exactly
+ * FICLONERANGE, for the entire file. We don't need to try to tell them apart;
+ * the kernel will sort that out for us.
+ *
+ * FIDEDUPERANGE is for turning a non-clone into a clone, that is, compare the
+ * range in both files and if they're the same, arrange for them to be backed
+ * by the same storage.
+ *
+ * REMAP_FILE_CAN_SHORTEN lets us know we can clone less than the given range
+ * if we want. It's designed for filesystems that may need to shorten the
+ * length for alignment, EOF, or any other requirement. ZFS may shorten the
+ * request when there is outstanding dirty data which hasn't been written.
+ */
+loff_t
+zpl_remap_file_range(struct file *src_file, loff_t src_off,
+    struct file *dst_file, loff_t dst_off, loff_t len, unsigned int flags)
+{
+	if (flags & ~(REMAP_FILE_DEDUP | REMAP_FILE_CAN_SHORTEN))
+		return (-EINVAL);
+
+	if (flags & REMAP_FILE_DEDUP)
+		return (zpl_dedupe_file_range_impl(src_file, src_off, dst_file,
+		    dst_off, len, !!(flags & REMAP_FILE_CAN_SHORTEN)));
+
+	/* Zero length means to clone everything to the end of the file */
+	if (len == 0)
+		len = i_size_read(file_inode(src_file)) - src_off;
+
+	ssize_t ret = zpl_clone_file_range_impl(src_file, src_off,
+	    dst_file, dst_off, len);
+
+	if (!(flags & REMAP_FILE_CAN_SHORTEN) && ret >= 0 && ret != len)
+		ret = -EINVAL;
+
+	return (ret);
+}
+#endif /* HAVE_VFS_REMAP_FILE_RANGE */
+
+#if defined(HAVE_VFS_CLONE_FILE_RANGE)
+/*
+ * Entry point for FICLONE and FICLONERANGE, before Linux 4.20.
+ */
+int
+zpl_clone_file_range(struct file *src_file, loff_t src_off,
+    struct file *dst_file, loff_t dst_off, uint64_t len)
+{
+	/* Zero length means to clone everything to the end of the file */
+	if (len == 0)
+		len = i_size_read(file_inode(src_file)) - src_off;
+
+	/* The entire length must be cloned or this is an error. */
+	ssize_t ret = zpl_clone_file_range_impl(src_file, src_off,
+	    dst_file, dst_off, len);
+
+	if (ret >= 0 && ret != len)
+		ret = -EINVAL;
+
+	return (ret);
+}
+#endif /* HAVE_VFS_CLONE_FILE_RANGE */
+
+#ifdef HAVE_VFS_DEDUPE_FILE_RANGE
+/*
+ * Entry point for FIDEDUPERANGE, before Linux 4.20.
+ */
+int
+zpl_dedupe_file_range(struct file *src_file, loff_t src_off,
+    struct file *dst_file, loff_t dst_off, uint64_t len)
+{
+	/*
+	 * The pre-4.20 dedupe interface has no way to signal that a short
+	 * dedupe is acceptable, so the whole range must match.
+	 */
+	return (zpl_dedupe_file_range_impl(src_file, src_off, dst_file,
+	    dst_off, len, B_FALSE));
+}
+#endif /* HAVE_VFS_DEDUPE_FILE_RANGE */

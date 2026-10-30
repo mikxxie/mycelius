@@ -1,0 +1,376 @@
+.Dd September 16, 2026
+.Dt IFLIB 4
+.Os
+.Sh NAME
+.Nm iflib
+.Nd Network Interface Driver Framework
+.Sh SYNOPSIS
+.Cd "device pci"
+.Cd "device iflib"
+.Sh DESCRIPTION
+.Nm
+is a framework for network interface drivers for
+.Fx .
+It is designed to remove a large amount of the boilerplate that is often
+needed for modern network interface devices, allowing driver authors to
+focus on the specific code needed for their hardware.
+This allows for a shared set of
+.Xr sysctl 8
+names, rather than each driver naming them individually.
+.Sh SYSCTL VARIABLES
+These variables must be set before loading the driver, either via
+.Xr loader.conf 5
+or through the use of
+.Xr kenv 1 .
+They are all prefixed by
+.Va dev.X.Y.iflib\&.
+where X is the driver name, and Y is the instance number.
+.Bl -tag -width indent
+.It Va override_nrxds
+Override the number of RX descriptors for each queue.
+The value is a comma separated list of positive integers.
+Some drivers only use a single value, but others may use more.
+These numbers must be powers of two, and zero means to use the default.
+Individual drivers may have additional restrictions on allowable values.
+Defaults to all zeros.
+.It Va override_ntxds
+Override the number of TX descriptors for each queue.
+The value is a comma separated list of positive integers.
+Some drivers only use a single value, but others may use more.
+These numbers must be powers of two, and zero means to use the default.
+Individual drivers may have additional restrictions on allowable values.
+Defaults to all zeros.
+.It Va override_qs_enable
+When set, allows the number of transmit and receive queues to be different.
+If not set, the lower of the number of TX or RX queues will be used for both.
+.It Va override_nrxqs
+Set the number of RX queues.
+If zero, the number of RX queues is derived from the number of cores on the
+socket connected to the controller.
+Defaults to 0.
+.It Va override_ntxqs
+Set the number of TX queues.
+If zero, the number of TX queues is derived from the number of cores on the
+socket connected to the controller.
+.It Va disable_msix
+Disables MSI-X interrupts for the device.
+.It Va core_offset
+Specifies a starting core offset to assign queues to.
+If the value is unspecified or 65535, cores are assigned sequentially across
+controllers.
+.It Va separate_txrx
+Requests that RX and TX queues not be paired on the same core.
+If this is zero or not set, an RX and TX queue pair will be assigned to each
+core.
+When set to a non-zero value, TX queues are assigned to cores following the
+last RX queue.
+.It Va simple_tx
+When set to one, iflib uses a simple transmit routine that sends packets
+directly while the transmit queue mutex is available.
+During contention, packets are deferred through a multi-producer
+.Xr buf_ring 9
+and drained by the mutex holder.
+By default, iflib uses a highly optimized, lockless, transmit queue called
+mp_ring.
+This performs well when there are more CPU cores than NIC
+queues and prevents lock contention for transmit resources.
+Unfortunately, mp_ring incurs unneeded overheads on workloads where
+resource contention is not a problem (well behaved applications on
+systems where there are as many NIC queues as CPU cores).
+Note that when this is enabled, the tx_abdicate sysctl is no longer
+applicable and is ignored.
+By default, this is the inverse of
+.Va net.iflib.prefer_mpring .
+An explicitly configured value takes precedence over that global default.
+.El
+.Pp
+These
+.Xr sysctl 8
+variables can be changed at any time:
+.Bl -tag -width indent
+.It Va tx_abdicate
+Controls how the transmit ring is serviced.
+If set to zero, when a frame is submitted to the transmission ring, the same
+task that is submitting it will service the ring unless there's already a
+task servicing the TX ring.
+This ensures that whenever there is a pending transmission,
+the transmit ring is being serviced.
+This results in higher transmit throughput.
+If set to a non-zero value, task returns immediately and the transmit
+ring is serviced by a different task.
+This returns control to the caller faster and under high receive load,
+may result in fewer dropped RX frames.
+.It Va tx_defer_mfree
+Controls the threshold in packets before iflib will free the memory
+(mbufs) for the packets that it has transmitted.
+When this is nonzero, mbufs will be freed outside the transmit lock.
+Setting this can reduce lock contention and CPU use when using simple_tx.
+Note that this applies only when simple_tx is enabled.
+.It Va tx_reclaim_thresh
+Controls the threshold in packets before iflib will ask the driver
+how many transmitted packets can be reclaimed.
+Determining how many many packets can be reclaimed can be expensive
+on some drivers.
+.It Va tx_reclaim_ticks
+Controls the time in ticks before iflib will ask the driver
+how many transmitted packets can be reclaimed.
+Determining how many many packets can be reclaimed can be expensive
+on some drivers.
+.It Va rx_budget
+Sets the maximum number of frames to be received at a time.
+Zero (the default) indicates the default (currently 16) should be used.
+.El
+.Pp
+There are also some global sysctls which can change behaviour for all drivers,
+and, unless noted otherwise, may be changed at any time.
+.Bl -tag -width indent
+.It Va net.iflib.max_producers
+Limits the number of callers that may concurrently enqueue packets to a
+simple transmit deferral ring without taking the transmit queue mutex.
+The limit is applied separately to each transmit queue.
+If lockless producers from one last-level cache are active, a producer from
+another last-level cache waits for the transmit queue mutex regardless of the
+limit.
+Setting this to zero forces all contending producers to wait for the mutex.
+The default is 8.
+This setting applies only when
+.Va simple_tx
+is enabled.
+.It Va net.iflib.min_tx_latency
+If this is set to a non-zero value, iflib will avoid any attempt to combine
+multiple transmits, and notify the hardware as quickly as possible of
+new descriptors.
+This will lower the maximum throughput, but will also lower transmit latency.
+.It Va net.iflib.no_tx_batch
+Some NICs allow processing completed transmit descriptors in batches.
+Doing so usually increases the transmit throughput by reducing the number of
+transmit interrupts.
+Setting this to a non-zero value will disable the use of this feature.
+.It Va net.iflib.prefer_mpring
+When set, use the
+.Va mp_ring
+transmit path by default instead of the simple transmit path.
+This is a read-only tunable that must be set before
+.Nm
+is loaded.
+An explicitly configured per-device
+.Va simple_tx
+value takes precedence.
+The default is one.
+.It Va net.iflib.simple_drain_quota
+Sets the maximum number of packets that the transmit task may remove from a
+simple transmit deferral ring in one drain operation.
+The default is 8.
+This setting applies only when
+.Va simple_tx
+is enabled.
+.It Va net.iflib.simple_drain_quota_thread
+Sets the maximum number of packets that a transmitting thread holding the
+transmit queue mutex may remove from a simple transmit deferral ring in one
+drain operation.
+A smaller value bounds the time for which a transmitting thread can hold the
+mutex while other producers replenish the ring.
+The default is 65536.
+This setting applies only when
+.Va simple_tx
+is enabled.
+.It Va net.iflib.simple_txbr_size
+Sets the number of entries in each
+.Xr buf_ring 9
+used by the simple transmit path to defer packets.
+The value must be a power of two and at least 64.
+Invalid values are replaced with the default of 1024.
+This is a read-only tunable that must be set before
+.Nm
+is loaded.
+This setting applies only when
+.Va simple_tx
+is enabled.
+.It Va net.iflib.tx_watchdog_periods
+Number of consecutive
+.Va net.iflib.timer_default
+intervals for which a transmit queue must remain frozen under demand before
+.Nm
+asks the hardware whether it has completions pending.
+A queue is frozen when it holds descriptors the hardware has not reported as
+completed while none are reclaimed.
+Demand persists while the outstanding descriptor count grows, the software
+queue is stalled, or the hardware descriptor ring is at its backpressure
+threshold.
+If it reports none, the interface is reset.
+Setting this to zero disables the check.
+.El
+.Pp
+These
+.Xr sysctl 8
+variables are read-only:
+.Bl -tag -width indent
+.It Va driver_version
+A string indicating the internal version of the driver.
+.It Va tx_watchdog_events
+Number of transmit watchdog resets initiated by
+.Nm .
+This counts recovery events, not failed packets, and is not included in the
+interface output error counter.
+.El
+.Pp
+There are a number of queue state
+.Xr sysctl 8
+variables as well:
+.Bl -tag -width indent
+.It Va txqZ
+The following are repeated for each transmit queue, where Z is the transmit
+queue instance number:
+.Bl -tag -width indent
+.It Va r_abdications
+Number of consumer abdications in the MP ring for this queue.
+An abdication occurs on every ring submission when tx_abdicate is true.
+.It Va r_restarts
+Number of consumer restarts in the MP ring for this queue.
+A restart occurs when an attempt to drain a non-empty ring fails,
+and the ring is already in the STALLED state.
+.It Va r_stalls
+Number of consumer stalls in the MP ring for this queue.
+A stall occurs when an attempt to drain a non-empty ring fails.
+.It Va r_starts
+Number of normal consumer starts in the MP ring for this queue.
+A start occurs when the MP ring transitions from IDLE to BUSY.
+.It Va r_drops
+Number of drops in the MP ring for this queue.
+A drop occurs when there is an attempt to add an entry to an MP ring with
+no available space.
+.It Va r_enqueues
+Number of entries which have been enqueued to the MP ring for this queue.
+.It Va ring_state
+MP (soft) ring state.
+This provides a snapshot of the current MP ring state, including the producer
+head and tail indexes, the consumer index, and the state.
+The state is one of "IDLE", "BUSY",
+"STALLED", or "ABDICATED".
+.It Va txq_cleaned
+The number of transmit descriptors which have been reclaimed.
+Total cleaned.
+.It Va txq_processed
+The number of transmit descriptors which have been processed, but may not yet
+have been reclaimed.
+.It Va txq_in_use
+Descriptors which have been added to the transmit queue,
+but have not yet been cleaned.
+This value will include both untransmitted descriptors as well as descriptors
+which have been processed.
+.It Va txq_cidx_processed
+The transmit queue consumer index of the next descriptor to process.
+.It Va txq_cidx
+The transmit queue consumer index of the oldest descriptor to reclaim.
+.It Va txq_pidx
+The transmit queue producer index where the next descriptor to transmit will
+be inserted.
+.It Va no_tx_dma_setup
+Number of times DMA mapping a transmit mbuf failed for reasons other than
+.Er EFBIG .
+.It Va txd_encap_efbig
+Number of times DMA mapping a transmit mbuf failed due to requiring too many
+segments.
+.It Va tx_map_failed
+Number of times DMA mapping a transmit mbuf failed for any reason
+(sum of no_tx_dma_setup and txd_encap_efbig)
+.It Va no_desc_avail
+Number of times a descriptor couldn't be added to the transmit ring because
+the transmit ring was full.
+.It Va mbuf_defrag_failed
+Number of times both
+.Xr m_collapse 9
+and
+.Xr m_defrag 9
+failed after an
+.Er EFBIG
+error
+result from DMA mapping a transmit mbuf.
+.It Va m_pullups
+Number of times
+.Xr m_pullup 9
+was called attempting to parse a header.
+.It Va mbuf_defrag
+Number of times
+.Xr m_defrag 9
+was called.
+.El
+.It Va rxqZ
+The following are repeated for each receive queue, where Z is the
+receive queue instance number:
+.Bl -tag -width indent
+.It Va rxq_fl0.credits
+Credits currently available in the receive ring.
+.It Va rxq_fl0.cidx
+Current receive ring consumer index.
+.It Va rxq_fl0.pidx
+Current receive ring producer index.
+.El
+.El
+.Pp
+Additional OIDs useful for driver and iflib development are exposed when the
+INVARIANTS and/or WITNESS options are enabled in the kernel.
+.Ss FAILURE INJECTION
+Registration failures can be injected for one selected device through the
+.Xr fail 9
+framework.
+Set
+.Va debug.fail_point.iflib.register_device
+to the exact device name and configure one of these fail points:
+.Bl -tag -width "register_before_attach_pre"
+.It Va register_before_attach_pre
+Before the driver's pre-attach method.
+.It Va register_after_attach_pre
+After the driver's pre-attach method succeeds.
+.It Va register_after_taskqueue
+After the private taskqueue is started.
+.It Va register_after_interrupts
+After interrupt resources are allocated.
+.It Va register_after_queues
+After queue setup and core-offset allocation.
+.It Va register_after_attach_post
+After the interface is attached and the driver's post-attach method succeeds.
+.El
+.Pp
+The fail points are under
+.Va debug.fail_point.iflib
+and accept the syntax described by
+.Xr fail 9 .
+A one-shot failure is safest because it permits the next probe to recover the
+device:
+.Bd -literal -offset indent
+sysctl debug.fail_point.iflib.register_device=igc1
+sysctl debug.fail_point.iflib.register_after_attach_pre='1*return(5)'
+devctl detach igc1
+devctl attach pci0:4:0:0       # returns EIO
+devctl attach pci0:4:0:0       # succeeds
+.Ed
+.Pp
+After detach, a device may no longer have its former name.
+Use a bus-specific address, as shown in the PCI example above, to reprobe it.
+.Pp
+The normal detach path can be synchronized with an in-flight admin task to
+test taskqueue teardown.
+Set
+.Va debug.fail_point.iflib.admin_task_device
+to the exact device name, bring the interface up, and set
+.Va debug.fail_point.iflib.admin_task_after_detach_check
+to a one-shot bounded delay, such as
+.Ql 1*print(1)->1*delay(5000000) .
+The delay keeps the admin task active long enough for detach to begin and
+remain blocked in the taskqueue drain.
+As a safety backstop, this fail point is marked nonsleepable and converts a
+configured
+.Sy sleep
+action to a delay.
+Once the execution message appears in the system log,
+detach should wait for the delay to finish.
+This exercises the case where an admin task has passed its detach check but
+has not yet acquired the context lock.
+.Sh SEE ALSO
+.Xr devctl 8 ,
+.Xr fail 9 ,
+.Xr iflib 9
+.Sh HISTORY
+This framework was introduced in
+.Fx 11.0 .

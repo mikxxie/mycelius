@@ -1,0 +1,100 @@
+# SPDX-License-Identifier: CDDL-1.0
+#
+# This file and its contents are supplied under the terms of the
+# Common Development and Distribution License ("CDDL"), version 1.0.
+# You may only use this file in accordance with the terms of version
+# 1.0 of the CDDL.
+#
+# A full copy of the text of the CDDL should have accompanied this
+# source.  A copy of the CDDL is also available via the Internet at
+# https://opensource.org/license/CDDL-1.0.
+#
+
+#
+# Copyright 2009 Sun Microsystems, Inc.  All rights reserved.
+# Use is subject to license terms.
+#
+
+#
+# Copyright (c) 2013, 2016 by Delphix. All rights reserved.
+#
+
+. $STF_SUITE/include/libtest.shlib
+. $STF_SUITE/tests/functional/userquota/userquota.cfg
+
+#
+# reset the userquota and groupquota and delete temporary files
+#
+function cleanup_quota
+{
+	if datasetexists $QFS; then
+		log_must zfs set userquota@$QUSER1=none $QFS
+		log_must zfs set userobjquota@$QUSER1=none $QFS
+		log_must zfs set userquota@$QUSER2=none $QFS
+		log_must zfs set userobjquota@$QUSER2=none $QFS
+		log_must zfs set groupquota@$QGROUP=none $QFS
+		log_must zfs set groupobjquota@$QGROUP=none $QFS
+		log_must zfs set defaultuserquota=none $QFS
+		log_must zfs set defaultuserobjquota=none $QFS
+		log_must zfs set defaultgroupquota=none $QFS
+		log_must zfs set defaultgroupobjquota=none $QFS
+		recovery_writable $QFS
+	fi
+
+	[[ -f $QFILE ]] && log_must rm -f $QFILE
+	[[ -f $OFILE ]] && log_must rm -f $OFILE
+	[[ -f $QFILE2 ]] && log_must rm -f $QFILE2
+	[[ -f $OFILE2 ]] && log_must rm -f $OFILE2
+	sync_all_pools
+
+	return 0
+}
+
+#
+# delete user and group that created during the test
+#
+function clean_user_group
+{
+	for usr in $QUSER1 $QUSER2; do
+		log_must del_user $usr
+	done
+
+	log_must del_group $QGROUP
+
+	return 0
+}
+
+#
+#  make the $QFS's mountpoint writable for all users
+#
+function mkmount_writable
+{
+	typeset fs=$1
+	typeset mntp=$(get_prop mountpoint $fs)
+	log_must chmod 0777 $mntp
+}
+
+#
+# recovery the directory permission for $QFS
+#
+function recovery_writable
+{
+	typeset fs=$1
+	typeset mntp=$(get_prop mountpoint $fs)
+	log_must chmod 0755 $mntp
+}
+
+#
+# check the quota value of a specific FS
+#
+function check_quota
+{
+	typeset fs=$2
+	typeset prop=$1
+	typeset expected=$3
+	typeset value=$(get_prop $prop $fs)
+
+	if (($value != $expected)); then
+		return 1
+	fi
+}

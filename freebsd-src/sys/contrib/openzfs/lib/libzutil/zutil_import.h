@@ -1,0 +1,54 @@
+// SPDX-License-Identifier: CDDL-1.0
+/*
+ * This file and its contents are supplied under the terms of the
+ * Common Development and Distribution License ("CDDL"), version 1.0.
+ * You may only use this file in accordance with the terms of version
+ * 1.0 of the CDDL.
+ *
+ * A full copy of the text of the CDDL should have accompanied this
+ * source.  A copy of the CDDL is also available via the Internet at
+ * https://opensource.org/license/CDDL-1.0.
+ */
+/*
+ * Copyright 2015 Nexenta Systems, Inc. All rights reserved.
+ * Copyright (c) 2005, 2010, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2018 by Delphix. All rights reserved.
+ * Copyright 2015 RackTop Systems.
+ * Copyright (c) 2016, Intel Corporation.
+ */
+#ifndef _LIBZUTIL_ZUTIL_IMPORT_H_
+#define	_LIBZUTIL_ZUTIL_IMPORT_H_
+
+#define	IMPORT_ORDER_PREFERRED_1	1
+#define	IMPORT_ORDER_PREFERRED_2	2
+#define	IMPORT_ORDER_SCAN_OFFSET	10
+#define	IMPORT_ORDER_DEFAULT		100
+
+int label_paths(libpc_handle_t *hdl, nvlist_t *label, const char **path,
+    const char **devid);
+int zpool_find_import_blkid(libpc_handle_t *hdl, pthread_mutex_t *lock,
+    avl_tree_t **slice_cache);
+
+void * zutil_alloc(libpc_handle_t *hdl, size_t size);
+char *zutil_strdup(libpc_handle_t *hdl, const char *str);
+
+typedef struct rdsk_node {
+	char *rn_name;			/* Full path to device */
+	int rn_order;			/* Preferred order (low to high) */
+	int rn_num_labels;		/* Number of valid labels */
+	uint64_t rn_vdev_guid;		/* Expected vdev guid when set */
+	libpc_handle_t *rn_hdl;
+	nvlist_t *rn_config;		/* Label config */
+	avl_tree_t *rn_avl;
+	avl_node_t rn_node;
+	pthread_mutex_t *rn_lock;
+	boolean_t rn_labelpaths;
+} rdsk_node_t;
+
+int slice_cache_compare(const void *, const void *);
+
+boolean_t zpool_dev_probe_ok(const char *path);
+boolean_t zpool_dev_probe_ok_fd(int fd);
+void zpool_open_func(void *);
+
+#endif /* _LIBZUTIL_ZUTIL_IMPORT_H_ */

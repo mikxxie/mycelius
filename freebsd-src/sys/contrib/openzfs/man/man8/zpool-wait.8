@@ -1,0 +1,114 @@
+.\" SPDX-License-Identifier: CDDL-1.0
+.\"
+.\" This file and its contents are supplied under the terms of the
+.\" Common Development and Distribution License ("CDDL"), version 1.0.
+.\" You may only use this file in accordance with the terms of version
+.\" 1.0 of the CDDL.
+.\"
+.\" A full copy of the text of the CDDL should have accompanied this
+.\" source.  A copy of the CDDL is also available via the Internet at
+.\" https://opensource.org/license/CDDL-1.0.
+.\"
+.\"
+.\" Copyright (c) 2007, Sun Microsystems, Inc. All Rights Reserved.
+.\" Copyright (c) 2012, 2021 by Delphix. All rights reserved.
+.\" Copyright (c) 2012 Cyril Plisko. All Rights Reserved.
+.\" Copyright (c) 2017 Datto Inc.
+.\" Copyright (c) 2018 George Melikov. All Rights Reserved.
+.\" Copyright 2017 Nexenta Systems, Inc.
+.\" Copyright (c) 2017 Open-E, Inc. All Rights Reserved.
+.\" Copyright (c) 2024-2026, Klara, Inc.
+.\" Copyright (c) 2026, TrueNAS.
+.\"
+.Dd May 26, 2026
+.Dt ZPOOL-WAIT 8
+.Os
+.
+.Sh NAME
+.Nm zpool-wait
+.Nd wait for activity to stop in a ZFS storage pool
+.Sh SYNOPSIS
+.Nm zpool
+.Cm wait
+.Op Fl Hp
+.Op Fl T Sy u Ns | Ns Sy d
+.Op Fl t Ar activity Ns Oo , Ns Ar activity Ns Oc Ns …
+.Ar pool
+.Op Ar interval
+.
+.Sh DESCRIPTION
+Waits until all background activity of the given types has ceased in the given
+pool.
+The activity could cease because it has completed, or because it has been
+paused or canceled by a user, or because the pool has been exported or
+destroyed.
+If no activities are specified, the command waits until background activity of
+every type listed below has ceased.
+If there is no activity of the given types in progress, the command returns
+immediately.
+.Pp
+These are the possible values for
+.Ar activity ,
+along with what each one waits for:
+.Bl -tag -compact -offset Ds -width "raidz_expand"
+.It Sy discard
+Checkpoint to be discarded
+.It Sy free
+.Sy freeing
+property to become
+.Sy 0
+.It Sy initialize
+All initializations to cease
+.It Sy replace
+All device replacements to cease
+.It Sy remove
+Device removal to cease
+.It Sy resilver
+Resilver to cease
+.It Sy scrub
+Scrub to cease
+.It Sy trim
+Manual trim to cease
+.It Sy raidz_expand
+Attaching to a RAID-Z vdev to complete
+.It Sy condense
+Metadata condense operations to complete
+.El
+.Pp
+If an
+.Ar interval
+is provided, the amount of work remaining, in bytes, for each activity is
+printed every
+.Ar interval
+seconds.
+.Bl -tag -width Ds
+.It Fl H
+Scripted mode.
+Do not display headers, and separate fields by a single tab instead of arbitrary
+space.
+.It Fl p
+Display numbers in parsable (exact) values.
+.It Fl T Sy u Ns | Ns Sy d
+Display a time stamp.
+Specify
+.Sy u
+for a printed representation of the internal representation of time.
+See
+.Xr time 1 .
+Specify
+.Sy d
+for standard date format.
+See
+.Xr date 1 .
+.El
+.
+.Sh SEE ALSO
+.Xr zpool-checkpoint 8 ,
+.Xr zpool-condense 8 ,
+.Xr zpool-initialize 8 ,
+.Xr zpool-remove 8 ,
+.Xr zpool-replace 8 ,
+.Xr zpool-resilver 8 ,
+.Xr zpool-scrub 8 ,
+.Xr zpool-status 8 ,
+.Xr zpool-trim 8

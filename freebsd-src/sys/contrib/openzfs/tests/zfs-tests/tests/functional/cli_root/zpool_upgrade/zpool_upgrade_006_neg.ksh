@@ -1,0 +1,48 @@
+#!/bin/ksh -p
+# SPDX-License-Identifier: CDDL-1.0
+#
+# This file and its contents are supplied under the terms of the
+# Common Development and Distribution License ("CDDL"), version 1.0.
+# You may only use this file in accordance with the terms of version
+# 1.0 of the CDDL.
+#
+# A full copy of the text of the CDDL should have accompanied this
+# source.  A copy of the CDDL is also available via the Internet at
+# https://opensource.org/license/CDDL-1.0.
+#
+
+#
+# Copyright 2007 Sun Microsystems, Inc.  All rights reserved.
+# Use is subject to license terms.
+#
+
+#
+# Copyright (c) 2012, 2016 by Delphix. All rights reserved.
+# Copyright 2015 Nexenta Systems, Inc.  All rights reserved.
+#
+
+. $STF_SUITE/tests/functional/cli_root/zpool_upgrade/zpool_upgrade.kshlib
+
+#
+# DESCRIPTION:
+# Attempting to upgrade a non-existent pool will return an error
+#
+# STRATEGY:
+# 1. Compose non-existent pool name, try to upgrade it
+# 2. Verify non-zero exit status
+#
+
+log_assert "Attempting to upgrade a non-existent pool will return an error"
+
+NO_POOL=notapool
+
+while true ; do
+	if poolexists $NO_POOL ; then
+		NO_POOL="${NO_POOL}x"
+	else
+		log_mustnot zpool upgrade $NO_POOL
+		break
+	fi
+done
+
+log_pass "Attempting to upgrade a non-existent pool will return an error"

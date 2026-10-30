@@ -1,0 +1,42 @@
+.\" SPDX-License-Identifier: CDDL-1.0
+.\"
+.\" This file and its contents are supplied under the terms of the
+.\" Common Development and Distribution License ("CDDL"), version 1.0.
+.\" You may only use this file in accordance with the terms of version
+.\" 1.0 of the CDDL.
+.\"
+.\" A full copy of the text of the CDDL should have accompanied this
+.\" source.  A copy of the CDDL is also available via the Internet at
+.\" https://opensource.org/license/CDDL-1.0.
+.\"
+.\"
+.\" Copyright (c) 2023, Klara Inc.
+.\"
+.Dd February 14, 2024
+.Dt ZPOOL-PREFETCH 8
+.Os
+.
+.Sh NAME
+.Nm zpool-prefetch
+.Nd prefetch pool metadata into ARC
+.Sh SYNOPSIS
+.Nm zpool
+.Cm prefetch
+.Op Fl t Ar type
+.Ar pool
+.Sh DESCRIPTION
+Massively prefetch metadata of a specific type for the given pool into the ARC
+to reduce latency of some operations later.
+If no type is specified, all types are prefetched.
+.Pp
+The following types are supported:
+.Bl -tag -width "brt"
+.It Sy brt
+Prefetch the BRT (block reference table).
+This may improve performance for block cloning operations,
+and frees for earlier cloned blocks.
+.It Sy ddt
+Prefetch the DDT (deduplication table).
+This may improve performance of writes when deduplication is enabled,
+and frees for earlier deduplicated blocks.
+.El

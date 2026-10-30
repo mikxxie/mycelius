@@ -1,0 +1,73 @@
+# SPDX-License-Identifier: CDDL-1.0
+#
+# This file and its contents are supplied under the terms of the
+# Common Development and Distribution License ("CDDL"), version 1.0.
+# You may only use this file in accordance with the terms of version
+# 1.0 of the CDDL.
+#
+# A full copy of the text of the CDDL should have accompanied this
+# source.  A copy of the CDDL is also available via the Internet at
+# https://opensource.org/license/CDDL-1.0.
+#
+
+#
+# Copyright 2007 Sun Microsystems, Inc.  All rights reserved.
+# Use is subject to license terms.
+#
+
+#
+# Copyright (c) 2016 by Delphix. All rights reserved.
+#
+
+. $STF_SUITE/include/libtest.shlib
+
+#
+# Compare the checksum of target files with the original file
+#
+
+function compare_cksum #<orig_data> <target_data1>...<target_datan>
+{
+	typeset orig_data=$1
+	typeset orig_sum=$(cksum < $orig_data)
+	typeset target_sum=""
+	typeset bad_data_list=""
+	typeset -i bad_count=0
+
+	shift
+	for data in $@; do
+		if [[ ! -e $data ]]; then
+			bad_data_list="$bad_data_list $data"
+			(( bad_count +=1 ))
+			continue
+		fi
+
+		target_sum=$(cksum < $data)
+		if [[ $target_sum != $orig_sum ]]; then
+			bad_data_list="$bad_data_list $data"
+			(( bad_count +=1 ))
+		fi
+	done
+
+	[[ $bad_data_list != "" ]] && \
+		log_fail "Data corruptions appear during send->receive." \
+			"There are total $bad_count corruptions. They are:\n"\
+			"$bad_data_list"
+}
+
+#
+# Check the received dataset exists or not
+#
+function receive_check #<dataset1>...<datasetn>
+{
+	typeset bad_rst_tgts=""
+
+	for dataset in $@; do
+		! datasetexists $dataset && \
+			bad_rst_tgts="$bad_rst_tgts $dataset"
+	done
+
+	if [[ $bad_rst_tgts != "" ]]; then
+		log_fail "Restoring fails. The specified datasets"\
+			"$bad_rst_tgts are not being received."
+	fi
+}

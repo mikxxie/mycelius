@@ -1,0 +1,181 @@
+.\"
+.\" Copyright (c) 2007, 2008, 2009 Rui Paulo <rpaulo@FreeBSD.org>
+.\" Copyright (c) 2026 Enji Cooper <ngie@FreeBSD.org>
+.\"
+.\" SPDX-License-Identifier: BSD-2-Clause
+.\"
+.Dd September 6, 2026
+.Dt ASMC 4
+.Os
+.Sh NAME
+.Nm asmc
+.Nd Apple System Management Controller driver
+.Sh SYNOPSIS
+To compile this driver into the kernel, place the following line in your
+kernel configuration file:
+.Bd -ragged -offset indent
+.Cd device asmc
+.Sh DESCRIPTION
+The
+.Nm
+driver controls the Apple System Management Controller (SMC for short)
+found on Intel Apple systems.
+.Pp
+With this driver, you can configure your keyboard backlight
+brightness, check temperatures of several sensors, check the speed of
+the internal fans and check the status of the Sudden Motion Sensor.
+.Pp
+Variables related to the SMC control and inspection are exported via
+.Xr sysctl 3
+under the device tree
+.Va dev.asmc .
+.Sh KEYBOARD BACKLIGHT
+The keyboard brightness on all laptop models, e.g., MacBook Pro, can be
+controlled by writing a value to the
+.Va dev.asmc.%d.light.control
+sysctl MIB or with
+.Xr backlight 8
+utility.
+.Pp
+The following sysctl MIBs contains the raw value returned by the left
+and right light sensors:
+.Va dev.asmc.%d.light.left
+or
+.Va dev.asmc.%d.light.right .
+.Sh TEMPERATURES
+The number of temperature sensors and their description varies among
+systems.
+You can inspect the temperature sensors on your system by traversing
+the
+.Va dev.asmc.temp
+sysctl MIB.
+.Pp
+All values are in degrees celsius.
+.Sh SYSTEM FANS
+The
+.Va dev.asmc.fan.%d
+sysctl tree contains the leaf nodes
+.Va speed ,
+.Va safespeed ,
+.Va minspeed ,
+.Va maxspeed
+and
+.Va targetspeed .
+Each of these leaf nodes represent the current fan speed, the safest
+minimum fan speed, the minimum speed and the maximum speed
+respectively.
+.Pp
+All values are in RPM.
+.Sh POWER MANAGEMENT
+The
+.Va dev.asmc.%d.auto_poweron
+sysctl controls whether the machine automatically powers on when AC power
+is restored after an unclean power loss
+.Pq SMC key Dq AUPO .
+A value of 1 enables automatic power-on; 0 disables it.
+.Sh RAW SMC KEY ACCESS
+When the kernel is compiled with the
+.Dv ASMC_DEBUG
+option, a set of sysctl nodes is provided under
+.Va dev.asmc.%d.raw
+for reading and writing arbitrary SMC keys by name.
+.Pp
+.Bl -tag -width "dev.asmc.%d.raw.value" -compact
+.It Va dev.asmc.%d.raw.key
+Set the 4-character SMC key name to access (e.g.,\&
+.Dq AUPO ) .
+Setting this automatically queries the key's length and type.
+.It Va dev.asmc.%d.raw.value
+Read or write the key's value as a hex string.
+.It Va dev.asmc.%d.raw.len
+The auto-detected value length in bytes (read-only).
+.It Va dev.asmc.%d.raw.type
+The 4-character SMC type string (e.g.,\&
+.Dq ui8 ,
+.Dq flt )
+(read-only).
+.El
+.Pp
+Example usage:
+.Bd -literal -offset indent
+sysctl dev.asmc.0.raw.key=AUPO
+sysctl dev.asmc.0.raw.value
+sysctl dev.asmc.0.raw.value=01
+.Ed
+.Sh SUDDEN MOTION SENSOR
+The Sudden Motion Sensor (SMS for short) is a device that detects
+laptop movement and notifies the operating system via an interrupt.
+The sysctl MIBs present under
+.Va dev.asmc.sms
+all relate to the SMS.
+.Pp
+The most interesting usage of this device is to park the disk heads
+when the laptop is moved harshly.
+Configure
+.Xr devd 8
+the following way to automatically park your hard drives using
+.Xr camcontrol 8 :
+.Bd -literal -offset indent
+notify 0 {
+	match "system"		"ACPI";
+	match "subsystem"	"asmc";
+	action			"/sbin/camcontrol idle X";
+};
+.Ed
+.Pp
+Do not forget to change
+.Ar X
+in the command example to match the target hard drive, e.g.,
+.Pa ada0 .
+.Pp
+Also, please note that parking the disk heads too many times can
+dramatically reduce your hard drive's life span.
+Do not rely solely on the SMS to protect your hard drive: good care and
+common sense can increase your hard drive's life.
+.Sh HARDWARE
+The
+.Nm
+driver supports the Apple SMC on the following systems:
+.Pp
+.Bl -bullet -offset indent -compact
+.It
+iMac
+.It
+MacBook
+.It
+MacBook Air
+.It
+MacBook Pro
+.It
+Mac Mini
+.It
+Mac Pro
+.El
+.Sh FILES
+.Bl -tag -width "/dev/backlight/asmc0" -compact
+.It Pa /dev/backlight/asmc0
+Keyboard
+.Xr backlight 8
+device node.
+.Sh SEE ALSO
+.Xr apple_bce 4 ,
+.Xr backlight 8 ,
+.Xr camcontrol 8 ,
+.Xr devd 8 ,
+.Xr sysctl 8
+.Sh HISTORY
+The
+.Nm
+driver first appeared in
+.Fx 8.0 .
+The driver was heavily modified in
+.Fx 15.1
+to support additional Apple SMC functionality and platforms.
+.Sh AUTHORS
+.An Rui Paulo Aq Mt rpaulo@FreeBSD.org
+wrote
+.Nm
+as a 2007 Google Summer of Code project.
+.Sh BUGS
+This driver also supports ARM64 Mac models (in theory), but this has not
+been tested yet.

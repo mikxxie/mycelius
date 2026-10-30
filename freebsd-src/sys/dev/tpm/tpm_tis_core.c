@@ -1,0 +1,687 @@
+/*-
+ * Copyright (c) 2018 Stormshield.
+ * Copyright (c) 2018 Semihalf.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
+ * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT,
+ * INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+ * ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+ */
+
+#include <sys/cdefs.h>
+#include <sys/param.h>
+
+#include <machine/atomic.h>
+
+#include "tpm20.h"
+#include "tpm_if.h"
+
+/*
+ * TIS register space as defined in
+ * TCG_PC_Client_Platform_TPM_Profile_PTP_2.0_r1.03_v22
+ */
+#define	TPM_ACCESS			0x0
+#define	TPM_INT_ENABLE			0x8
+#define	TPM_INT_VECTOR			0xc
+#define	TPM_INT_STS			0x10
+#define	TPM_INTF_CAPS			0x14
+#define	TPM_STS				0x18
+#define	TPM_DATA_FIFO			0x24
+#define	TPM_INTF_ID			0x30
+#define	TPM_XDATA_FIFO			0x80
+#define	TPM_DID_VID			0xF00
+#define	TPM_RID				0xF04
+
+#define	TPM_ACCESS_LOC_REQ		BIT(1)
+#define	TPM_ACCESS_LOC_Seize		BIT(3)
+#define	TPM_ACCESS_LOC_ACTIVE		BIT(5)
+#define	TPM_ACCESS_LOC_RELINQUISH	BIT(5)
+#define	TPM_ACCESS_VALID		BIT(7)
+
+#define	TPM_INT_ENABLE_GLOBAL_ENABLE	BIT(31)
+#define	TPM_INT_ENABLE_CMD_RDY		BIT(7)
+#define	TPM_INT_ENABLE_LOC_CHANGE	BIT(2)
+#define	TPM_INT_ENABLE_STS_VALID	BIT(1)
+#define	TPM_INT_ENABLE_DATA_AVAIL	BIT(0)
+
+#define	TPM_INT_STS_CMD_RDY		BIT(7)
+#define	TPM_INT_STS_LOC_CHANGE		BIT(2)
+#define	TPM_INT_STS_VALID		BIT(1)
+#define	TPM_INT_STS_DATA_AVAIL		BIT(0)
+
+#define	TPM_INTF_CAPS_VERSION		0x70000000
+#define	TPM_INTF_CAPS_TPM20		0x30000000
+
+#define	TPM_STS_VALID			BIT(7)
+#define	TPM_STS_CMD_RDY			BIT(6)
+#define	TPM_STS_CMD_START		BIT(5)
+#define	TPM_STS_DATA_AVAIL		BIT(4)
+#define	TPM_STS_DATA_EXPECTED		BIT(3)
+#define	TPM_STS_BURST_MASK		0xFFFF00
+#define	TPM_STS_BURST_OFFSET		0x8
+
+static int tpmtis_transmit(device_t dev, struct tpm_priv *priv, size_t length);
+
+static int tpmtis_detach(device_t dev);
+
+static void tpmtis_intr_handler(void *arg);
+
+static bool tpmtis_program_intr(struct tpm_sc *sc, bool enable);
+static void tpmtis_setup_intr(struct tpm_sc *sc);
+static int tpmtis_resume(device_t dev);
+
+static bool tpmtis_read_bytes(struct tpm_sc *sc, size_t count, uint8_t *buf);
+static bool tpmtis_write_bytes(struct tpm_sc *sc, size_t count, uint8_t *buf);
+static bool tpmtis_request_locality(struct tpm_sc *sc, int locality);
+static void tpmtis_relinquish_locality(struct tpm_sc *sc);
+static bool tpmtis_go_ready(struct tpm_sc *sc);
+
+static bool tpm_wait_for_reg(struct tpm_sc *sc, bus_size_t off,
+    uint32_t mask, uint32_t val, int32_t timeout, int intr_type,
+    bool reg32);
+
+static uint16_t tpmtis_wait_for_burst(struct tpm_sc *sc);
+
+int
+tpmtis_attach(device_t dev)
+{
+	struct tpm_sc *sc;
+	rman_res_t irq;
+	void *intr_cookie;
+	bool configured;
+	int result;
+	int poll = 0;
+
+	sc = device_get_softc(dev);
+	sc->dev = dev;
+	sc->intr_type = -1;
+	sc->intr_generation = 0;
+	sc->interrupts = false;
+	sc->intr_cookie = NULL;
+	sc->irq_res = NULL;
+
+	sx_init(&sc->dev_lock, "TPM driver lock");
+	mtx_init(&sc->intr_lock, "TPM interrupt lock", NULL, MTX_DEF);
+	cv_init(&sc->intr_cv, "tpmtis_intr");
+
+	/*
+	 * Firmware may have left interrupt delivery enabled.  Quiesce the TPM
+	 * before installing a handler or starting the entropy harvester, even
+	 * when we will use polling or cannot use the advertised IRQ.
+	 */
+	sx_xlock(&sc->dev_lock);
+	configured = tpmtis_program_intr(sc, false);
+	sx_xunlock(&sc->dev_lock);
+	if (!configured) {
+		device_printf(dev, "failed to quiesce TPM interrupts\n");
+		tpmtis_detach(dev);
+		return (ENXIO);
+	}
+
+	resource_int_value("tpm", device_get_unit(dev), "use_polling", &poll);
+	if (poll != 0) {
+		device_printf(dev,
+		    "Using poll method to get TPM operation status\n");
+		goto skip_irq;
+	}
+
+	sc->irq_rid = 0;
+	sc->irq_res = bus_alloc_resource_any(dev, SYS_RES_IRQ, &sc->irq_rid,
+		    RF_ACTIVE | RF_SHAREABLE);
+	if (sc->irq_res == NULL)
+		goto skip_irq;
+
+	/*
+	 * This driver uses the resource IRQ directly as the LPC SIRQ selector.
+	 * Parent IRQ numbers need not map directly to SIRQ channels.  Preserve
+	 * the existing 1..15 limit and use polling for other routes without
+	 * installing a handler.
+	 */
+	irq = bus_get_resource_start(dev, SYS_RES_IRQ, sc->irq_rid);
+	if (irq == 0 || irq > 0xf) {
+		device_printf(dev, "cannot use IRQ %ju; using polling\n",
+		    (uintmax_t)irq);
+		goto release_irq;
+	}
+
+	/* Failed setup may leave a stale cookie after removing its handler. */
+	intr_cookie = NULL;
+	result = bus_setup_intr(dev, sc->irq_res, INTR_TYPE_MISC | INTR_MPSAFE,
+		    NULL, tpmtis_intr_handler, sc, &intr_cookie);
+	if (result == 0) {
+		sc->intr_cookie = intr_cookie;
+		goto skip_irq;
+	}
+release_irq:
+	if (bus_release_resource(dev, SYS_RES_IRQ, sc->irq_rid,
+	    sc->irq_res) == 0)
+		sc->irq_res = NULL;
+skip_irq:
+	result = tpm20_init(sc);
+	if (result != 0) {
+		tpmtis_detach(dev);
+		return (result);
+	}
+	if (sc->intr_cookie != NULL)
+		tpmtis_setup_intr(sc);
+
+	return (0);
+}
+
+static int
+tpmtis_detach(device_t dev)
+{
+	struct tpm_sc *sc;
+
+	sc = device_get_softc(dev);
+	/*
+	 * Stop new commands before quiescing hardware with the lock still live.
+	 */
+	atomic_store_bool(&sc->dying, true);
+	sx_xlock(&sc->dev_lock);
+	mtx_lock(&sc->intr_lock);
+	sc->interrupts = false;
+	sc->intr_type = -1;
+	mtx_unlock(&sc->intr_lock);
+	if (!tpmtis_program_intr(sc, false))
+		device_printf(dev,
+		    "failed to quiesce TPM interrupts during detach\n");
+	sx_xunlock(&sc->dev_lock);
+	tpm20_release(sc);
+
+	if (sc->intr_cookie != NULL)
+		bus_teardown_intr(dev, sc->irq_res, sc->intr_cookie);
+	cv_destroy(&sc->intr_cv);
+	mtx_destroy(&sc->intr_lock);
+
+	if (sc->irq_res != NULL)
+		bus_release_resource(dev, SYS_RES_IRQ,
+		    sc->irq_rid, sc->irq_res);
+
+	if (sc->mem_res != NULL)
+		bus_release_resource(dev, SYS_RES_MEMORY,
+		    sc->mem_rid, sc->mem_res);
+
+	return (0);
+}
+
+/*
+ * Test if the advertisted interrupt actually works.
+ * This sends a simple command. (GetRandom)
+ * Interrupts are then enabled in the handler.
+ */
+static void
+tpmtis_test_intr(struct tpm_sc *sc)
+{
+	struct tpm_priv *priv;
+	uint8_t cmd[] = {
+		0x80, 0x01,		/* TPM_ST_NO_SESSIONS tag*/
+		0x00, 0x00, 0x00, 0x0c,	/* cmd length */
+		0x00, 0x00, 0x01, 0x7b,	/* cmd TPM_CC_GetRandom */
+		0x00, 0x01 		/* number of bytes requested */
+	};
+
+	sx_xlock(&sc->dev_lock);
+	priv = sc->internal_priv;
+	memcpy(priv->buf, cmd, sizeof(cmd));
+	tpmtis_transmit(sc->dev, priv, sizeof(cmd));
+	sx_xunlock(&sc->dev_lock);
+}
+
+static bool
+tpmtis_program_intr(struct tpm_sc *sc, bool enable)
+{
+	rman_res_t irq;
+	uint32_t reg;
+
+	sx_assert(&sc->dev_lock, SA_XLOCKED);
+
+	if (!tpmtis_request_locality(sc, 0)) {
+		/* Interrupt enable can be read without owning locality. */
+		return (!enable && (TPM_READ_4(sc->dev, TPM_INT_ENABLE) &
+		    TPM_INT_ENABLE_GLOBAL_ENABLE) == 0);
+	}
+
+	/* Disable delivery before acknowledging or reconfiguring interrupts. */
+	reg = TPM_READ_4(sc->dev, TPM_INT_ENABLE);
+	reg &= ~TPM_INT_ENABLE_GLOBAL_ENABLE;
+	TPM_WRITE_4(sc->dev, TPM_INT_ENABLE, reg);
+	TPM_WRITE_BARRIER(sc->dev, TPM_INT_ENABLE, 4);
+	if ((TPM_READ_4(sc->dev, TPM_INT_ENABLE) &
+	    TPM_INT_ENABLE_GLOBAL_ENABLE) != 0) {
+		tpmtis_relinquish_locality(sc);
+		return (false);
+	}
+
+	/* Clear all pending interrupts. */
+	reg = TPM_READ_4(sc->dev, TPM_INT_STS);
+	TPM_WRITE_4(sc->dev, TPM_INT_STS, reg);
+
+	if (enable) {
+		KASSERT(sc->intr_cookie != NULL,
+		    ("TPM interrupts enabled without a handler"));
+		irq = bus_get_resource_start(sc->dev, SYS_RES_IRQ,
+		    sc->irq_rid);
+		if (irq == 0 || irq > 0xf) {
+			tpmtis_relinquish_locality(sc);
+			return (false);
+		}
+		TPM_WRITE_1(sc->dev, TPM_INT_VECTOR, (uint8_t)irq);
+
+		if (sc->intr_mask == 0) {
+			reg = TPM_READ_4(sc->dev, TPM_INT_ENABLE);
+			reg |= TPM_INT_ENABLE_DATA_AVAIL |
+			    TPM_INT_ENABLE_LOC_CHANGE |
+			    TPM_INT_ENABLE_CMD_RDY |
+			    TPM_INT_ENABLE_STS_VALID;
+			reg &= ~TPM_INT_ENABLE_GLOBAL_ENABLE;
+			sc->intr_mask = reg;
+		}
+		TPM_WRITE_4(sc->dev, TPM_INT_ENABLE,
+		    sc->intr_mask | TPM_INT_ENABLE_GLOBAL_ENABLE);
+	}
+
+	tpmtis_relinquish_locality(sc);
+	return (true);
+}
+
+static void
+tpmtis_setup_intr(struct tpm_sc *sc)
+{
+	bool configured, enable;
+
+	enable = sc->intr_cookie != NULL;
+	sx_xlock(&sc->dev_lock);
+	mtx_lock(&sc->intr_lock);
+	sc->interrupts = false;
+	sc->intr_type = -1;
+	mtx_unlock(&sc->intr_lock);
+	configured = tpmtis_program_intr(sc, enable);
+	sx_xunlock(&sc->dev_lock);
+	if (!configured || !enable)
+		return;
+	tpmtis_test_intr(sc);
+}
+
+static int
+tpmtis_resume(device_t dev)
+{
+	struct tpm_sc *sc;
+	bool restore_intr;
+
+	sc = device_get_softc(dev);
+	sx_xlock(&sc->dev_lock);
+	mtx_lock(&sc->intr_lock);
+	restore_intr = sc->interrupts;
+
+	/*
+	 * Interrupt routing and enable state may be lost across suspend.  Keep
+	 * the transport in polling mode until a restored interrupt is actually
+	 * observed by the handler.
+	 */
+	sc->interrupts = false;
+	sc->intr_type = -1;
+	mtx_unlock(&sc->intr_lock);
+	if (!tpmtis_program_intr(sc, restore_intr))
+		device_printf(dev,
+		    "failed to %s interrupts; using polling\n",
+		    restore_intr ? "restore" : "disable");
+	sx_xunlock(&sc->dev_lock);
+
+	return (tpm20_resume(dev));
+}
+
+static void
+tpmtis_intr_handler(void *arg)
+{
+	struct tpm_sc *sc;
+	uint32_t status;
+
+	sc = (struct tpm_sc *)arg;
+	status = TPM_READ_4(sc->dev, TPM_INT_STS);
+
+	TPM_WRITE_4(sc->dev, TPM_INT_STS, status);
+
+	mtx_lock(&sc->intr_lock);
+	/* Check for stray interrupts. */
+	if (sc->intr_type != -1 && (sc->intr_type & status) != 0) {
+		sc->interrupts = true;
+		sc->intr_generation++;
+		cv_broadcast(&sc->intr_cv);
+	}
+	mtx_unlock(&sc->intr_lock);
+}
+
+static uint32_t
+tpmtis_read_wait_reg(struct tpm_sc *sc, bus_size_t off, bool reg32)
+{
+
+	if (reg32)
+		return (TPM_READ_4(sc->dev, off));
+	return (TPM_READ_1(sc->dev, off));
+}
+
+static bool
+tpm_wait_for_reg(struct tpm_sc *sc, bus_size_t off, uint32_t mask,
+    uint32_t val, int32_t timeout, int intr_type, bool reg32)
+{
+	sbintime_t deadline;
+	uint32_t generation;
+	bool interrupts, result;
+
+	sx_assert(&sc->dev_lock, SA_XLOCKED);
+	deadline = sbinuptime() + ustosbt(timeout);
+	mtx_lock(&sc->intr_lock);
+	sc->intr_type = intr_type;
+	generation = sc->intr_generation;
+	interrupts = sc->interrupts;
+	mtx_unlock(&sc->intr_lock);
+
+	for (;;) {
+		result = (tpmtis_read_wait_reg(sc, off, reg32) & mask) == val;
+		if (result)
+			break;
+		if (sbinuptime() >= deadline)
+			break;
+		if (!interrupts) {
+			pause("TPM POLLING", 1);
+			mtx_lock(&sc->intr_lock);
+			generation = sc->intr_generation;
+			interrupts = sc->interrupts;
+			mtx_unlock(&sc->intr_lock);
+			continue;
+		}
+
+		/*
+		 * Register access may sleep for a SPI TPM, so evaluate the
+		 * predicate without intr_lock.  The generation check closes the
+		 * resulting window before cv_timedwait_sbt() atomically sleeps.
+		 */
+		mtx_lock(&sc->intr_lock);
+		if (generation == sc->intr_generation)
+			(void)cv_timedwait_sbt(&sc->intr_cv, &sc->intr_lock,
+			    deadline, 0, C_ABSOLUTE | C_HARDCLOCK);
+		generation = sc->intr_generation;
+		interrupts = sc->interrupts;
+		mtx_unlock(&sc->intr_lock);
+	}
+
+	mtx_lock(&sc->intr_lock);
+	sc->intr_type = -1;
+	mtx_unlock(&sc->intr_lock);
+	return (result);
+}
+
+static uint16_t
+tpmtis_wait_for_burst(struct tpm_sc *sc)
+{
+	int timeout;
+	uint16_t burst_count;
+
+	timeout = TPM_TIMEOUT_A;
+
+	while (timeout-- > 0) {
+		burst_count = (TPM_READ_4(sc->dev, TPM_STS) & TPM_STS_BURST_MASK) >>
+		    TPM_STS_BURST_OFFSET;
+		if (burst_count > 0)
+			break;
+
+		DELAY(1);
+	}
+	return (burst_count);
+}
+
+static bool
+tpmtis_read_bytes(struct tpm_sc *sc, size_t count, uint8_t *buf)
+{
+	uint16_t burst_count;
+
+	while (count > 0) {
+		burst_count = tpmtis_wait_for_burst(sc);
+		if (burst_count == 0)
+			return (false);
+
+		burst_count = MIN(burst_count, count);
+		count -= burst_count;
+
+		while (burst_count-- > 0)
+			*buf++ = TPM_READ_1(sc->dev, TPM_DATA_FIFO);
+	}
+
+	return (true);
+}
+
+static bool
+tpmtis_write_bytes(struct tpm_sc *sc, size_t count, uint8_t *buf)
+{
+	uint16_t burst_count;
+
+	while (count > 0) {
+		burst_count = tpmtis_wait_for_burst(sc);
+		if (burst_count == 0)
+			return (false);
+
+		burst_count = MIN(burst_count, count);
+		count -= burst_count;
+
+		while (burst_count-- > 0)
+			TPM_WRITE_1(sc->dev, TPM_DATA_FIFO, *buf++);
+	}
+
+	return (true);
+}
+
+static bool
+tpmtis_request_locality(struct tpm_sc *sc, int locality)
+{
+	uint8_t mask;
+
+	sx_assert(&sc->dev_lock, SA_XLOCKED);
+	/* Currently we only support Locality 0 */
+	if (locality != 0)
+		return (false);
+
+	mask = TPM_ACCESS_LOC_ACTIVE | TPM_ACCESS_VALID;
+
+	TPM_WRITE_1(sc->dev, TPM_ACCESS, TPM_ACCESS_LOC_REQ);
+	TPM_WRITE_BARRIER(sc->dev, TPM_ACCESS, 1);
+	if (tpm_wait_for_reg(sc, TPM_ACCESS, mask, mask, TPM_TIMEOUT_A,
+	    TPM_INT_STS_LOC_CHANGE, false))
+		return (true);
+
+	/* Cancel the request so a later grant cannot leave locality owned. */
+	TPM_WRITE_1(sc->dev, TPM_ACCESS, TPM_ACCESS_LOC_RELINQUISH);
+	TPM_WRITE_BARRIER(sc->dev, TPM_ACCESS, 1);
+	return (false);
+}
+
+static void
+tpmtis_relinquish_locality(struct tpm_sc *sc)
+{
+	bool interrupts;
+
+	sx_assert(&sc->dev_lock, SA_XLOCKED);
+	/*
+	 * Interrupts can only be cleared when a locality is active.
+	 * Clear them now in case interrupt handler didn't make it in time.
+	 */
+	mtx_lock(&sc->intr_lock);
+	interrupts = sc->interrupts;
+	mtx_unlock(&sc->intr_lock);
+	if (interrupts)
+		TPM_WRITE_4(sc->dev, TPM_INT_STS,
+		    TPM_READ_4(sc->dev, TPM_INT_STS));
+
+	OR1(sc, TPM_ACCESS, TPM_ACCESS_LOC_RELINQUISH);
+}
+
+static bool
+tpmtis_go_ready(struct tpm_sc *sc)
+{
+	uint32_t mask;
+
+	mask = TPM_STS_CMD_RDY;
+
+	TPM_WRITE_4(sc->dev, TPM_STS, TPM_STS_CMD_RDY);
+	TPM_WRITE_BARRIER(sc->dev, TPM_STS, 4);
+	if (!tpm_wait_for_reg(sc, TPM_STS, mask, mask, TPM_TIMEOUT_B,
+	    TPM_INT_STS_CMD_RDY, true))
+		return (false);
+
+	return (true);
+}
+
+static int
+tpmtis_transmit(device_t dev, struct tpm_priv *priv, size_t length)
+{
+	struct tpm_sc *sc;
+	size_t bytes_available;
+	uint32_t mask, curr_cmd;
+	int error, timeout;
+	bool locality;
+
+	sc = device_get_softc(dev);
+	sx_assert(&sc->dev_lock, SA_XLOCKED);
+	locality = false;
+
+	if (!tpmtis_request_locality(sc, 0)) {
+		device_printf(dev,
+		    "Failed to obtain locality\n");
+		return (EIO);
+	}
+	locality = true;
+	if (!tpmtis_go_ready(sc)) {
+		device_printf(dev,
+		    "Failed to switch to ready state\n");
+		error = EIO;
+		goto out;
+	}
+	if (!tpmtis_write_bytes(sc, length, priv->buf)) {
+		device_printf(dev,
+		    "Failed to write cmd to device\n");
+		error = EIO;
+		goto out;
+	}
+
+	mask = TPM_STS_VALID;
+	if (!tpm_wait_for_reg(sc, TPM_STS, mask, mask, TPM_TIMEOUT_C,
+	    TPM_INT_STS_VALID, true)) {
+		device_printf(dev,
+		    "Timeout while waiting for valid bit\n");
+		error = EIO;
+		goto out;
+	}
+	if (TPM_READ_4(dev, TPM_STS) & TPM_STS_DATA_EXPECTED) {
+		device_printf(dev,
+		    "Device expects more data even though we already"
+		    " sent everything we had\n");
+		error = EIO;
+		goto out;
+	}
+
+	/*
+	 * Calculate timeout for current command.
+	 * Command code is passed in bytes 6-10.
+	 */
+	curr_cmd = be32toh(*(uint32_t *) (&priv->buf[6]));
+	timeout = tpm20_get_timeout(curr_cmd);
+
+	TPM_WRITE_4(dev, TPM_STS, TPM_STS_CMD_START);
+	TPM_WRITE_BARRIER(dev, TPM_STS, 4);
+
+	mask = TPM_STS_DATA_AVAIL | TPM_STS_VALID;
+	if (!tpm_wait_for_reg(sc, TPM_STS, mask, mask, timeout,
+	    TPM_INT_STS_DATA_AVAIL, true)) {
+		device_printf(dev,
+		    "Timeout while waiting for device to process cmd\n");
+		/*
+		 * Switching to ready state also cancels processing
+		 * current command
+		 */
+		if (!tpmtis_go_ready(sc)) {
+			error = EIO;
+			goto out;
+		}
+
+		/*
+		 * After canceling a command we should get a response,
+		 * check if there is one.
+		 */
+		if (!tpm_wait_for_reg(sc, TPM_STS, mask, mask, TPM_TIMEOUT_C,
+		    TPM_INT_STS_DATA_AVAIL, true)) {
+			error = EIO;
+			goto out;
+		}
+	}
+	/* Read response header. Length is passed in bytes 2 - 6. */
+	if (!tpmtis_read_bytes(sc, TPM_HEADER_SIZE, priv->buf)) {
+		device_printf(dev,
+		    "Failed to read response header\n");
+		error = EIO;
+		goto out;
+	}
+	bytes_available = be32toh(*(uint32_t *) (&priv->buf[2]));
+
+	if (bytes_available > TPM_BUFSIZE || bytes_available < TPM_HEADER_SIZE) {
+		device_printf(dev,
+		    "Incorrect response size: %zu\n",
+		    bytes_available);
+		error = EIO;
+		goto out;
+	}
+	if (!tpmtis_read_bytes(sc, bytes_available - TPM_HEADER_SIZE,
+	    &priv->buf[TPM_HEADER_SIZE])) {
+		device_printf(dev,
+		    "Failed to read response\n");
+		error = EIO;
+		goto out;
+	}
+	priv->offset = 0;
+	priv->len = bytes_available;
+	error = 0;
+
+out:
+	/*
+	 * Per TIS 1.3 section 5.6.12, write commandReady after every command
+	 * attempt so the TPM can discard a partial FIFO transaction and free
+	 * its internal resources.  The next tpmtis_go_ready() provides the
+	 * second write the spec mentions and waits for the state transition.
+	 */
+	if (locality) {
+		TPM_WRITE_4(sc->dev, TPM_STS, TPM_STS_CMD_RDY);
+		TPM_WRITE_BARRIER(sc->dev, TPM_STS, 4);
+		tpmtis_relinquish_locality(sc);
+	}
+
+	return (error);
+}
+
+/* ACPI Driver */
+static device_method_t tpmtis_methods[] = {
+	DEVMETHOD(device_attach,	tpmtis_attach),
+	DEVMETHOD(device_detach,	tpmtis_detach),
+	DEVMETHOD(device_shutdown,	tpm20_shutdown),
+	DEVMETHOD(device_suspend,	tpm20_suspend),
+	DEVMETHOD(device_resume,	tpmtis_resume),
+	DEVMETHOD(tpm_transmit,		tpmtis_transmit),
+	DEVMETHOD_END
+};
+
+DEFINE_CLASS_0(tpmtis, tpmtis_driver, tpmtis_methods, sizeof(struct tpm_sc));

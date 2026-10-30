@@ -1,0 +1,2647 @@
+/*****************************************************************************
+
+  Copyright (c) 2001-2017, Intel Corporation
+  All rights reserved.
+
+  Redistribution and use in source and binary forms, with or without
+  modification, are permitted provided that the following conditions are met:
+
+   1. Redistributions of source code must retain the above copyright notice,
+      this list of conditions and the following disclaimer.
+
+   2. Redistributions in binary form must reproduce the above copyright
+      notice, this list of conditions and the following disclaimer in the
+      documentation and/or other materials provided with the distribution.
+
+   3. Neither the name of the Intel Corporation nor the names of its
+      contributors may be used to endorse or promote products derived from
+      this software without specific prior written permission.
+
+  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+  AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+  IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+  ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+  LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+  CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+  SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+  INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+  CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+  ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+  POSSIBILITY OF SUCH DAMAGE.
+
+*****************************************************************************/
+
+
+#include "opt_inet.h"
+#include "opt_inet6.h"
+#include "opt_rss.h"
+
+#include "ixgbe.h"
+#include "ixgbe_hv_vf.h"
+#include "ifdi_if.h"
+
+#include <net/netmap.h>
+#include <dev/netmap/netmap_kern.h>
+
+/************************************************************************
+ * Driver version
+ ************************************************************************/
+static const char ixv_driver_version[] = "2.0.1-k";
+
+static const sbintime_t ixv_mbx_retry_delay[] = {
+	250 * SBT_1MS,
+	1 * SBT_1S,
+	4 * SBT_1S,
+	8 * SBT_1S,
+};
+
+static const struct timeval ixv_mbx_log_interval = { 60, 0 };
+
+/* Bound stale carrier state without flapping on a busy PF mailbox. */
+#define IXV_LINK_MBX_FAILURE_LIMIT	3
+/* Match Intel's two-second VF service timer and spread PF mailbox load. */
+#define IXV_LINK_POLL_TICKS		4
+
+/************************************************************************
+ * PCI Device ID Table
+ *
+ *   Used by probe to select devices to load on
+ *   Last field stores an index into ixv_strings
+ *   Last entry must be all 0s
+ *
+ *   { Vendor ID, Device ID, SubVendor ID, SubDevice ID, String Index }
+ ************************************************************************/
+static const pci_vendor_info_t ixv_vendor_info_array[] =
+{
+	PVID(IXGBE_INTEL_VENDOR_ID, IXGBE_DEV_ID_82599_VF,
+	    "Intel(R) X520 82599 Virtual Function"),
+	PVID(IXGBE_INTEL_VENDOR_ID, IXGBE_DEV_ID_82599_VF_HV,
+	    "Intel(R) X520 82599 Hyper-V Virtual Function"),
+	PVID(IXGBE_INTEL_VENDOR_ID, IXGBE_DEV_ID_X540_VF,
+	    "Intel(R) X540 Virtual Function"),
+	PVID(IXGBE_INTEL_VENDOR_ID, IXGBE_DEV_ID_X540_VF_HV,
+	    "Intel(R) X540 Hyper-V Virtual Function"),
+	PVID(IXGBE_INTEL_VENDOR_ID, IXGBE_DEV_ID_X550_VF,
+	    "Intel(R) X550 Virtual Function"),
+	PVID(IXGBE_INTEL_VENDOR_ID, IXGBE_DEV_ID_X550_VF_HV,
+	    "Intel(R) X550 Hyper-V Virtual Function"),
+	PVID(IXGBE_INTEL_VENDOR_ID, IXGBE_DEV_ID_X550EM_X_VF,
+	    "Intel(R) X552 Virtual Function"),
+	PVID(IXGBE_INTEL_VENDOR_ID, IXGBE_DEV_ID_X550EM_X_VF_HV,
+	    "Intel(R) X552 Hyper-V Virtual Function"),
+	PVID(IXGBE_INTEL_VENDOR_ID, IXGBE_DEV_ID_X550EM_A_VF,
+	    "Intel(R) X553 Virtual Function"),
+	PVID(IXGBE_INTEL_VENDOR_ID, IXGBE_DEV_ID_X550EM_A_VF_HV,
+	    "Intel(R) X553 Hyper-V Virtual Function"),
+	PVID_OEM(IXGBE_INTEL_VENDOR_ID, IXGBE_DEV_ID_E610_VF, 0,
+	    IXGBE_SUBDEV_ID_E610_VF_HV, 0,
+	    "Intel(R) E610 Hyper-V Virtual Function"),
+	PVID(IXGBE_INTEL_VENDOR_ID, IXGBE_DEV_ID_E610_VF,
+	    "Intel(R) E610 Virtual Function"),
+	/* required last entry */
+	PVID_END
+};
+
+/************************************************************************
+ * Function prototypes
+ ************************************************************************/
+static void     *ixv_register(device_t);
+static int      ixv_if_attach_pre(if_ctx_t);
+static int      ixv_if_attach_post(if_ctx_t);
+static int      ixv_if_detach(if_ctx_t);
+
+static int      ixv_if_rx_queue_intr_enable(if_ctx_t, uint16_t);
+static int      ixv_if_tx_queues_alloc(if_ctx_t, caddr_t *, uint64_t *, int,
+    int);
+static int      ixv_if_rx_queues_alloc(if_ctx_t, caddr_t *, uint64_t *, int,
+    int);
+static void     ixv_if_queues_free(if_ctx_t);
+static void     ixv_identify_hardware(if_ctx_t);
+static bool     ixv_is_hyperv(const struct ixgbe_hw *);
+static void     ixv_init_device_features(struct ixgbe_softc *);
+static int      ixv_allocate_pci_resources(if_ctx_t);
+static void     ixv_free_pci_resources(if_ctx_t);
+static int      ixv_setup_interface(if_ctx_t);
+static void     ixv_if_media_status(if_ctx_t, struct ifmediareq *);
+static int      ixv_if_media_change(if_ctx_t);
+static void     ixv_if_update_admin_status(if_ctx_t);
+static int      ixv_if_msix_intr_assign(if_ctx_t, int);
+
+static int      ixv_if_mtu_set(if_ctx_t, uint32_t);
+static int      ixv_if_get_rss_key(if_ctx_t, struct ifrsskey *);
+static int      ixv_if_get_rss_hash(if_ctx_t, struct ifrsshash *);
+static void     ixv_reconcile_mac(struct ixgbe_softc *, if_t);
+static void     ixv_if_init(if_ctx_t);
+static void     ixv_if_local_timer(if_ctx_t, uint16_t);
+static void     ixv_if_stop(if_ctx_t);
+static void     ixv_log_negotiate_failure(struct ixgbe_softc *, bool);
+static void     ixv_log_reset_failure(struct ixgbe_softc *, s32, bool);
+static void     ixv_mbx_retry_detach(struct ixgbe_softc *);
+static void     ixv_mbx_retry_failed(if_ctx_t);
+static void     ixv_mbx_retry_prepare(struct ixgbe_softc *);
+static void     ixv_mbx_retry_stop(struct ixgbe_softc *);
+static void     ixv_mbx_retry_succeeded(struct ixgbe_softc *);
+static int      ixv_negotiate_api(struct ixgbe_softc *);
+static int      ixv_queue_limit(struct ixgbe_softc *, bool);
+
+static void     ixv_initialize_transmit_units(if_ctx_t);
+static void     ixv_initialize_receive_units(if_ctx_t);
+static void     ixv_initialize_rss_mapping(struct ixgbe_softc *);
+
+static void     ixv_setup_vlan_support(if_ctx_t);
+static bool     ixv_vlan_error_retryable(s32);
+static void     ixv_vlan_retry_add(struct ixgbe_softc *, u16);
+static void     ixv_vlan_retry_clear(struct ixgbe_softc *, u16);
+static bool     ixv_vlan_retry_pending(const struct ixgbe_softc *);
+static void     ixv_vlan_retry_tick(struct ixgbe_softc *);
+static void     ixv_configure_ivars(struct ixgbe_softc *);
+static void     ixv_if_enable_intr(if_ctx_t);
+static void     ixv_if_disable_intr(if_ctx_t);
+static void     ixv_if_multi_set(if_ctx_t);
+static int      ixv_if_promisc_set(if_ctx_t, int);
+
+static void     ixv_if_register_vlan(if_ctx_t, u16);
+static void     ixv_if_unregister_vlan(if_ctx_t, u16);
+
+static uint64_t ixv_if_get_counter(if_ctx_t, ift_counter);
+static bool	ixv_if_needs_restart(if_ctx_t, enum iflib_restart_event);
+
+static void     ixv_init_stats(struct ixgbe_softc *);
+static void     ixv_update_stats(struct ixgbe_softc *);
+static void     ixv_add_stats_sysctls(struct ixgbe_softc *);
+
+static int      ixv_sysctl_debug(SYSCTL_HANDLER_ARGS);
+static void     ixv_set_ivar(struct ixgbe_softc *, u8, u8, s8);
+
+static u8       *ixv_mc_array_itr(struct ixgbe_hw *, u8 **, u32 *);
+
+/* The MSI-X Interrupt handlers */
+static int      ixv_msix_que(void *);
+static int      ixv_msix_mbx(void *);
+
+/************************************************************************
+ * FreeBSD Device Interface Entry Points
+ ************************************************************************/
+static device_method_t ixv_methods[] = {
+	/* Device interface */
+	DEVMETHOD(device_register, ixv_register),
+	DEVMETHOD(device_probe, iflib_device_probe),
+	DEVMETHOD(device_attach, iflib_device_attach),
+	DEVMETHOD(device_detach, iflib_device_detach),
+	DEVMETHOD(device_shutdown, iflib_device_shutdown),
+	DEVMETHOD(device_suspend, iflib_device_suspend),
+	DEVMETHOD(device_resume, iflib_device_resume),
+	DEVMETHOD_END
+};
+
+static driver_t ixv_driver = {
+	"ixv", ixv_methods, sizeof(struct ixgbe_softc),
+};
+
+DRIVER_MODULE(ixv, pci, ixv_driver, 0, 0);
+IFLIB_PNP_INFO(pci, ixv_driver, ixv_vendor_info_array);
+MODULE_DEPEND(ixv, iflib, 1, 1, 1);
+MODULE_DEPEND(ixv, pci, 1, 1, 1);
+MODULE_DEPEND(ixv, ether, 1, 1, 1);
+
+static device_method_t ixv_if_methods[] = {
+	DEVMETHOD(ifdi_attach_pre, ixv_if_attach_pre),
+	DEVMETHOD(ifdi_attach_post, ixv_if_attach_post),
+	DEVMETHOD(ifdi_detach, ixv_if_detach),
+	DEVMETHOD(ifdi_init, ixv_if_init),
+	DEVMETHOD(ifdi_stop, ixv_if_stop),
+	DEVMETHOD(ifdi_msix_intr_assign, ixv_if_msix_intr_assign),
+	DEVMETHOD(ifdi_intr_enable, ixv_if_enable_intr),
+	DEVMETHOD(ifdi_intr_disable, ixv_if_disable_intr),
+	DEVMETHOD(ifdi_tx_queue_intr_enable, ixv_if_rx_queue_intr_enable),
+	DEVMETHOD(ifdi_rx_queue_intr_enable, ixv_if_rx_queue_intr_enable),
+	DEVMETHOD(ifdi_tx_queues_alloc, ixv_if_tx_queues_alloc),
+	DEVMETHOD(ifdi_rx_queues_alloc, ixv_if_rx_queues_alloc),
+	DEVMETHOD(ifdi_queues_free, ixv_if_queues_free),
+	DEVMETHOD(ifdi_update_admin_status, ixv_if_update_admin_status),
+	DEVMETHOD(ifdi_multi_set, ixv_if_multi_set),
+	DEVMETHOD(ifdi_promisc_set, ixv_if_promisc_set),
+	DEVMETHOD(ifdi_mtu_set, ixv_if_mtu_set),
+	DEVMETHOD(ifdi_get_rss_key, ixv_if_get_rss_key),
+	DEVMETHOD(ifdi_get_rss_hash, ixv_if_get_rss_hash),
+	DEVMETHOD(ifdi_media_status, ixv_if_media_status),
+	DEVMETHOD(ifdi_media_change, ixv_if_media_change),
+	DEVMETHOD(ifdi_timer, ixv_if_local_timer),
+	DEVMETHOD(ifdi_vlan_register, ixv_if_register_vlan),
+	DEVMETHOD(ifdi_vlan_unregister, ixv_if_unregister_vlan),
+	DEVMETHOD(ifdi_get_counter, ixv_if_get_counter),
+	DEVMETHOD(ifdi_needs_restart, ixv_if_needs_restart),
+	DEVMETHOD_END
+};
+
+static driver_t ixv_if_driver = {
+  "ixv_if", ixv_if_methods, sizeof(struct ixgbe_softc)
+};
+
+#define	IXV_VLAN_RETRY_BATCH	4
+#define	IXV_VLAN_RETRY_WINDOW	(8 * SBT_1S)
+
+extern struct if_txrx ixgbe_txrx;
+
+static struct if_shared_ctx ixv_sctx_init = {
+	.isc_magic = IFLIB_MAGIC,
+	.isc_q_align = PAGE_SIZE,/* max(DBA_ALIGN, PAGE_SIZE) */
+	.isc_tx_maxsize = IXGBE_TSO_SIZE + sizeof(struct ether_vlan_header),
+	.isc_tx_maxsegsize = PAGE_SIZE,
+	.isc_tso_maxsize = IXGBE_TSO_SIZE + sizeof(struct ether_vlan_header),
+	.isc_tso_maxsegsize = PAGE_SIZE,
+	.isc_rx_maxsize = MJUM16BYTES,
+	.isc_rx_nsegments = 1,
+	.isc_rx_maxsegsize = MJUM16BYTES,
+	.isc_nfl = 1,
+	.isc_ntxqs = 1,
+	.isc_nrxqs = 1,
+	.isc_admin_intrcnt = 1,
+	.isc_vendor_info = ixv_vendor_info_array,
+	.isc_driver_version = ixv_driver_version,
+	.isc_driver = &ixv_if_driver,
+	.isc_flags = IFLIB_IS_VF | IFLIB_TSO_INIT_IP,
+
+	.isc_nrxd_min = {MIN_RXD},
+	.isc_ntxd_min = {MIN_TXD},
+	.isc_nrxd_max = {MAX_RXD},
+	.isc_ntxd_max = {MAX_TXD},
+	.isc_nrxd_default = {DEFAULT_RXD},
+	.isc_ntxd_default = {DEFAULT_TXD},
+};
+
+static void *
+ixv_register(device_t dev)
+{
+	return (&ixv_sctx_init);
+}
+
+/************************************************************************
+ * ixv_if_tx_queues_alloc
+ ************************************************************************/
+static int
+ixv_if_tx_queues_alloc(if_ctx_t ctx, caddr_t *vaddrs, uint64_t *paddrs,
+    int ntxqs, int ntxqsets)
+{
+	struct ixgbe_softc *sc = iflib_get_softc(ctx);
+	if_softc_ctx_t scctx = sc->shared;
+	struct ix_tx_queue *que;
+	int i, j, error;
+
+	MPASS(sc->num_tx_queues == ntxqsets);
+	MPASS(ntxqs == 1);
+
+	/* Allocate queue structure memory */
+	sc->tx_queues =
+	    (struct ix_tx_queue *)malloc(sizeof(struct ix_tx_queue) *
+	    ntxqsets, M_DEVBUF, M_NOWAIT | M_ZERO);
+	if (!sc->tx_queues) {
+		device_printf(iflib_get_dev(ctx),
+		    "Unable to allocate TX ring memory\n");
+		return (ENOMEM);
+	}
+
+	for (i = 0, que = sc->tx_queues; i < ntxqsets; i++, que++) {
+		struct tx_ring *txr = &que->txr;
+
+		txr->me = i;
+		txr->sc =  que->sc = sc;
+
+		/* Allocate report status array */
+		if (!(txr->tx_rsq = (qidx_t *)malloc(sizeof(qidx_t) *
+		    scctx->isc_ntxd[0], M_DEVBUF, M_NOWAIT | M_ZERO))) {
+			error = ENOMEM;
+			goto fail;
+		}
+		for (j = 0; j < scctx->isc_ntxd[0]; j++)
+			txr->tx_rsq[j] = QIDX_INVALID;
+		/* get virtual and physical address of the hardware queues */
+		txr->tail = IXGBE_VFTDT(txr->me);
+		txr->tx_base = (union ixgbe_adv_tx_desc *)vaddrs[i*ntxqs];
+		txr->tx_paddr = paddrs[i*ntxqs];
+
+		txr->bytes = 0;
+		txr->total_packets = 0;
+
+	}
+
+	device_printf(iflib_get_dev(ctx), "allocated for %d queues\n",
+	    sc->num_tx_queues);
+
+	return (0);
+
+ fail:
+	ixv_if_queues_free(ctx);
+
+	return (error);
+} /* ixv_if_tx_queues_alloc */
+
+/************************************************************************
+ * ixv_if_rx_queues_alloc
+ ************************************************************************/
+static int
+ixv_if_rx_queues_alloc(if_ctx_t ctx, caddr_t *vaddrs, uint64_t *paddrs,
+    int nrxqs, int nrxqsets)
+{
+	struct ixgbe_softc *sc = iflib_get_softc(ctx);
+	struct ix_rx_queue *que;
+	int i, error;
+
+	MPASS(sc->num_rx_queues == nrxqsets);
+	MPASS(nrxqs == 1);
+
+	/* Allocate queue structure memory */
+	sc->rx_queues =
+	    (struct ix_rx_queue *)malloc(sizeof(struct ix_rx_queue) *
+	    nrxqsets, M_DEVBUF, M_NOWAIT | M_ZERO);
+	if (!sc->rx_queues) {
+		device_printf(iflib_get_dev(ctx),
+		    "Unable to allocate TX ring memory\n");
+		error = ENOMEM;
+		goto fail;
+	}
+
+	for (i = 0, que = sc->rx_queues; i < nrxqsets; i++, que++) {
+		struct rx_ring *rxr = &que->rxr;
+		rxr->me = i;
+		rxr->sc = que->sc = sc;
+
+
+		/* get the virtual and physical address of the hw queues */
+		rxr->tail = IXGBE_VFRDT(rxr->me);
+		rxr->rx_base = (union ixgbe_adv_rx_desc *)vaddrs[i];
+		rxr->rx_paddr = paddrs[i*nrxqs];
+		rxr->bytes = 0;
+		rxr->que = que;
+	}
+
+	device_printf(iflib_get_dev(ctx), "allocated for %d rx queues\n",
+	    sc->num_rx_queues);
+
+	return (0);
+
+fail:
+	ixv_if_queues_free(ctx);
+
+	return (error);
+} /* ixv_if_rx_queues_alloc */
+
+/************************************************************************
+ * ixv_if_queues_free
+ ************************************************************************/
+static void
+ixv_if_queues_free(if_ctx_t ctx)
+{
+	struct ixgbe_softc *sc = iflib_get_softc(ctx);
+	struct ix_tx_queue *que = sc->tx_queues;
+	int i;
+
+	if (que == NULL)
+		goto free;
+
+	for (i = 0; i < sc->num_tx_queues; i++, que++) {
+		struct tx_ring *txr = &que->txr;
+		if (txr->tx_rsq == NULL)
+			break;
+
+		free(txr->tx_rsq, M_DEVBUF);
+		txr->tx_rsq = NULL;
+	}
+	if (sc->tx_queues != NULL)
+		free(sc->tx_queues, M_DEVBUF);
+free:
+	if (sc->rx_queues != NULL)
+		free(sc->rx_queues, M_DEVBUF);
+	sc->tx_queues = NULL;
+	sc->rx_queues = NULL;
+} /* ixv_if_queues_free */
+
+/************************************************************************
+ * ixv_if_attach_pre - Device initialization routine
+ *
+ *   Called when the driver is being loaded.
+ *   Identifies the type of hardware, allocates all resources
+ *   and initializes the hardware.
+ *
+ *   return 0 on success, positive on failure
+ ************************************************************************/
+static int
+ixv_if_attach_pre(if_ctx_t ctx)
+{
+	struct ixgbe_softc *sc;
+	device_t dev;
+	if_softc_ctx_t scctx;
+	struct ixgbe_hw *hw;
+	bool mailbox_ready;
+	int error = 0;
+
+	INIT_DEBUGOUT("ixv_attach: begin");
+
+	/* Allocate, clear, and link in our sc structure */
+	dev = iflib_get_dev(ctx);
+	sc = iflib_get_softc(ctx);
+	sc->dev = dev;
+	sc->ctx = ctx;
+	sc->hw.back = sc;
+	scctx = sc->shared = iflib_get_softc_ctx(ctx);
+	sc->media = iflib_get_media(ctx);
+	hw = &sc->hw;
+
+	/* Do base PCI setup - map BAR0 */
+	if (ixv_allocate_pci_resources(ctx)) {
+		device_printf(dev, "ixv_allocate_pci_resources() failed!\n");
+		error = ENXIO;
+		goto err_out;
+	}
+
+	/* SYSCTL APIs */
+	SYSCTL_ADD_PROC(device_get_sysctl_ctx(dev),
+	    SYSCTL_CHILDREN(device_get_sysctl_tree(dev)), OID_AUTO, "debug",
+	    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
+	    sc, 0, ixv_sysctl_debug, "I", "Debug Info");
+
+	/* Determine hardware revision */
+	ixv_identify_hardware(ctx);
+	ixv_init_device_features(sc);
+	sc->vf_link_poll_tick = device_get_unit(dev) % IXV_LINK_POLL_TICKS;
+
+	/* Initialize the shared code */
+	if (ixv_is_hyperv(hw))
+		error = ixgbevf_hv_init_ops_vf(hw);
+	else
+		error = ixgbe_init_ops_vf(hw);
+	if (error) {
+		device_printf(dev, "VF shared-code initialization failed\n");
+		error = EIO;
+		goto err_out;
+	}
+
+	/* Setup the mailbox */
+	ixgbe_init_mbx_params_vf(hw);
+
+	mailbox_ready = false;
+	error = hw->mac.ops.reset_hw(hw);
+	if (error != IXGBE_SUCCESS) {
+		/*
+		 * A PF may be resetting or servicing a slow link event while its
+		 * VFs are enumerated.  Keep the VF attached so a later if_init can
+		 * retry the mailbox handshake.
+		 */
+		ixv_log_reset_failure(sc, error, true);
+	} else {
+		error = hw->mac.ops.init_hw(hw);
+		if (error != IXGBE_SUCCESS) {
+			device_printf(dev, "...init_hw() failed with error %d\n",
+			    error);
+			error = EIO;
+			goto err_out;
+		}
+
+		/* Negotiate mailbox API version. */
+		error = ixv_negotiate_api(sc);
+		if (error != 0) {
+			ixv_log_negotiate_failure(sc, true);
+			hw->mac.ops.stop_adapter(hw);
+		} else
+			mailbox_ready = true;
+	}
+
+	/* Check if VF was disabled by PF. */
+	if (!mailbox_ready ||
+	    hw->mac.ops.get_link_state(hw, &sc->link_enabled) != 0) {
+		/* PF is not capable of controlling VF state. Enable link. */
+		sc->link_enabled = true;
+	}
+
+	/* If no mac address was assigned, make a random one */
+	if (!ixv_check_ether_addr(hw->mac.addr)) {
+		ether_gen_addr(iflib_get_ifp(ctx),
+		    (struct ether_addr *)hw->mac.addr);
+		bcopy(hw->mac.addr, hw->mac.perm_addr,
+		    sizeof(hw->mac.perm_addr));
+	}
+
+	/* Most of the iflib initialization... */
+
+	iflib_set_mac(ctx, hw->mac.addr);
+	scctx->isc_ntxqsets_max = scctx->isc_nrxqsets_max =
+	    ixv_queue_limit(sc, mailbox_ready);
+	scctx->isc_txqsizes[0] =
+	    roundup2(scctx->isc_ntxd[0] * sizeof(union ixgbe_adv_tx_desc) +
+	    sizeof(u32), DBA_ALIGN);
+	scctx->isc_rxqsizes[0] =
+	    roundup2(scctx->isc_nrxd[0] * sizeof(union ixgbe_adv_rx_desc),
+	    DBA_ALIGN);
+	/* XXX */
+	scctx->isc_tx_csum_flags = CSUM_IP | CSUM_TCP | CSUM_UDP | CSUM_TSO |
+	    CSUM_IP6_TCP | CSUM_IP6_UDP | CSUM_IP6_TSO | CSUM_SCTP |
+	    CSUM_IP6_SCTP;
+	scctx->isc_tx_nsegments = IXGBE_82599_SCATTER;
+	scctx->isc_msix_bar = pci_msix_table_bar(dev);
+	scctx->isc_tx_tso_segments_max = scctx->isc_tx_nsegments;
+	scctx->isc_tx_tso_size_max = IXGBE_TSO_SIZE;
+	scctx->isc_tx_tso_segsize_max = PAGE_SIZE;
+
+	scctx->isc_txrx = &ixgbe_txrx;
+
+	/* We support everything the PF does; VFs do not do WoL. */
+	scctx->isc_capabilities = IXGBE_CAPS;
+	scctx->isc_capenable = scctx->isc_capabilities;
+	atomic_store_rel_32(&sc->vf_mbx_ready, mailbox_ready);
+	callout_init(&sc->vf_mbx_retry, 1);
+	sc->vf_mbx_retry_initialized = true;
+
+	INIT_DEBUGOUT("ixv_if_attach_pre: end");
+
+	return (0);
+
+err_out:
+	ixv_free_pci_resources(ctx);
+
+	return (error);
+} /* ixv_if_attach_pre */
+
+static int
+ixv_if_attach_post(if_ctx_t ctx)
+{
+	struct ixgbe_softc *sc = iflib_get_softc(ctx);
+	device_t dev = iflib_get_dev(ctx);
+	int error = 0;
+
+	/* Setup OS specific network interface */
+	error = ixv_setup_interface(ctx);
+	if (error) {
+		device_printf(dev, "Interface setup failed: %d\n", error);
+		goto end;
+	}
+
+	/* Do the stats setup */
+	if (atomic_load_acq_32(&sc->vf_mbx_ready) != 0)
+		ixv_init_stats(sc);
+	ixv_add_stats_sysctls(sc);
+
+end:
+	return error;
+} /* ixv_if_attach_post */
+
+/************************************************************************
+ * ixv_detach - Device removal routine
+ *
+ *   Called when the driver is being removed.
+ *   Stops the adapter and deallocates all the resources
+ *   that were allocated for driver operation.
+ *
+ *   return 0 on success, positive on failure
+ ************************************************************************/
+static int
+ixv_if_detach(if_ctx_t ctx)
+{
+	struct ixgbe_softc *sc;
+
+	INIT_DEBUGOUT("ixv_detach: begin");
+
+	sc = iflib_get_softc(ctx);
+	ixv_mbx_retry_detach(sc);
+	ixv_free_pci_resources(ctx);
+
+	return (0);
+} /* ixv_if_detach */
+
+/************************************************************************
+ * ixv_if_mtu_set
+ ************************************************************************/
+static int
+ixv_if_mtu_set(if_ctx_t ctx, uint32_t mtu)
+{
+	struct ixgbe_softc *sc = iflib_get_softc(ctx);
+	if_t ifp = iflib_get_ifp(ctx);
+	uint32_t max_mtu;
+	int error = 0;
+
+	IOCTL_DEBUGOUT("ioctl: SIOCSIFMTU (Set Interface MTU)");
+	max_mtu = IXGBE_MAX_FRAME_SIZE - IXGBE_MTU_HDR;
+	/* The 82599 VF cannot enforce the X540 RLPML field. */
+	if (ixv_is_hyperv(&sc->hw) &&
+	    sc->hw.mac.type == ixgbe_mac_82599_vf)
+		max_mtu = ETHERMTU + ETHER_CRC_LEN;
+	if (mtu > max_mtu) {
+		error = EINVAL;
+	} else {
+		if_setmtu(ifp, mtu);
+		sc->max_frame_size = if_getmtu(ifp) + IXGBE_MTU_HDR;
+	}
+
+	return error;
+} /* ixv_if_mtu_set */
+
+static int
+ixv_rss_query_status(if_ctx_t ctx)
+{
+	struct ixgbe_softc *sc = iflib_get_softc(ctx);
+
+	sx_assert(iflib_ctx_lock_get(ctx), SA_XLOCKED);
+	/* Older VFs share PF-controlled RSS settings which we cannot query. */
+	if (sc->hw.mac.type < ixgbe_mac_X550_vf)
+		return (EOPNOTSUPP);
+	if (atomic_load_acq_32(&sc->vf_mbx_ready) == 0 ||
+	    sc->vf_rss_mrqc == 0)
+		return (ENXIO);
+	return (0);
+}
+
+static int
+ixv_if_get_rss_key(if_ctx_t ctx, struct ifrsskey *ifrk)
+{
+	struct ixgbe_softc *sc = iflib_get_softc(ctx);
+	int error;
+
+	error = ixv_rss_query_status(ctx);
+	if (error != 0)
+		return (error);
+	ifrk->ifrk_func = RSS_FUNC_TOEPLITZ;
+	ifrk->ifrk_keylen = sizeof(sc->vf_rss_key);
+	_Static_assert(sizeof(ifrk->ifrk_key) >= sizeof(sc->vf_rss_key),
+	    "RSS query buffer too small");
+	bzero(ifrk->ifrk_key, sizeof(ifrk->ifrk_key));
+	/* Preserve the byte order of the programmed registers. */
+	for (u_int i = 0; i < nitems(sc->vf_rss_key); i++)
+		le32enc(ifrk->ifrk_key + i * sizeof(u32), sc->vf_rss_key[i]);
+	return (0);
+}
+
+static int
+ixv_if_get_rss_hash(if_ctx_t ctx, struct ifrsshash *ifrh)
+{
+	struct ixgbe_softc *sc = iflib_get_softc(ctx);
+	u32 mrqc;
+	int error;
+
+	error = ixv_rss_query_status(ctx);
+	if (error != 0)
+		return (error);
+	ifrh->ifrh_func = RSS_FUNC_TOEPLITZ;
+	ifrh->ifrh_types = 0;
+	mrqc = sc->vf_rss_mrqc;
+	if (mrqc & IXGBE_MRQC_RSS_FIELD_IPV4)
+		ifrh->ifrh_types |= RSS_TYPE_IPV4;
+	if (mrqc & IXGBE_MRQC_RSS_FIELD_IPV4_TCP)
+		ifrh->ifrh_types |= RSS_TYPE_TCP_IPV4;
+	if (mrqc & IXGBE_MRQC_RSS_FIELD_IPV4_UDP)
+		ifrh->ifrh_types |= RSS_TYPE_UDP_IPV4;
+	if (mrqc & IXGBE_MRQC_RSS_FIELD_IPV6)
+		ifrh->ifrh_types |= RSS_TYPE_IPV6;
+	if (mrqc & IXGBE_MRQC_RSS_FIELD_IPV6_TCP)
+		ifrh->ifrh_types |= RSS_TYPE_TCP_IPV6;
+	if (mrqc & IXGBE_MRQC_RSS_FIELD_IPV6_UDP)
+		ifrh->ifrh_types |= RSS_TYPE_UDP_IPV6;
+	return (0);
+}
+
+static void
+ixv_reconcile_mac(struct ixgbe_softc *sc, if_t ifp)
+{
+	uint8_t *lladdr;
+
+	if (ixgbe_validate_mac_addr(sc->hw.mac.addr) != IXGBE_SUCCESS)
+		return;
+	lladdr = (uint8_t *)if_getlladdr(ifp);
+	if (bcmp(lladdr, sc->hw.mac.addr, ETHER_ADDR_LEN) == 0)
+		return;
+
+	device_printf(sc->dev,
+	    "PF rejected or replaced the requested MAC; using %6D\n",
+	    sc->hw.mac.addr, ":");
+	/*
+	 * Initialization holds the context lock; avoid re-entering the driver.
+	 */
+	bcopy(sc->hw.mac.addr, lladdr, ETHER_ADDR_LEN);
+	CURVNET_SET_QUIET(if_getvnet(ifp));
+	EVENTHANDLER_INVOKE(iflladdr_event, ifp);
+	CURVNET_RESTORE();
+} /* ixv_reconcile_mac */
+
+/************************************************************************
+ * ixv_if_init - Init entry point
+ *
+ *   Used in two ways: It is used by the stack as an init entry
+ *   point in network interface structure. It is also used
+ *   by the driver as a hw/sw initialization routine to get
+ *   to a consistent state.
+ *
+ *   return 0 on success, positive on failure
+ ************************************************************************/
+static void
+ixv_if_init(if_ctx_t ctx)
+{
+	struct ixgbe_softc  *sc = iflib_get_softc(ctx);
+	if_t ifp = iflib_get_ifp(ctx);
+	device_t dev = iflib_get_dev(ctx);
+	struct ixgbe_hw *hw = &sc->hw;
+	u8 requested_addr[IXGBE_ETH_LENGTH_OF_ADDRESS];
+	int error = 0;
+
+	INIT_DEBUGOUT("ixv_if_init: begin");
+	sc->vf_rss_mrqc = 0;
+	ixv_mbx_retry_prepare(sc);
+	hw->adapter_stopped = false;
+	hw->mac.ops.stop_adapter(hw);
+
+	/* Preserve a requested LAA across the reset handshake. */
+	bcopy(if_getlladdr(ifp), requested_addr, sizeof(requested_addr));
+
+	/* Reset VF and renegotiate mailbox API version. */
+	error = hw->mac.ops.reset_hw(hw);
+	if (error != IXGBE_SUCCESS) {
+		sc->stats.vf.initialized = false;
+		ixv_log_reset_failure(sc, error, false);
+		hw->mac.ops.stop_adapter(hw);
+		ixv_mbx_retry_failed(ctx);
+		return;
+	}
+	hw->mac.ops.start_hw(hw);
+	ixv_init_stats(sc);
+	error = ixv_negotiate_api(sc);
+	if (error) {
+		/*
+		 * Leave the adapter stopped until an explicit or deferred retry.
+		 * Otherwise the admin-status callback immediately requests another
+		 * reset and can keep its taskqueue in a tight loop while the PF is
+		 * deliberately withholding mailbox CTS (for example, when the VF is
+		 * quarantined).
+		 */
+		ixv_log_negotiate_failure(sc, false);
+		hw->mac.ops.stop_adapter(hw);
+		ixv_mbx_retry_failed(ctx);
+		return;
+	}
+	/* Program the address only after the PF mailbox is responsive. */
+	error = hw->mac.ops.set_rar(hw, 0, requested_addr, 0, 1);
+	if (error == IXGBE_SUCCESS)
+		bcopy(requested_addr, hw->mac.addr, sizeof(requested_addr));
+	else
+		hw->mac.ops.get_mac_addr(hw, hw->mac.addr);
+	ixv_reconcile_mac(sc, ifp);
+	ixv_mbx_retry_succeeded(sc);
+
+	ixv_initialize_transmit_units(ctx);
+
+	/* Setup Multicast table */
+	ixv_if_multi_set(ctx);
+
+	sc->rx_mbuf_sz = iflib_get_rx_mbuf_sz(ctx);
+
+	/* Configure RX settings */
+	ixv_initialize_receive_units(ctx);
+
+	/* Set up VLAN offload and filter */
+	ixv_setup_vlan_support(ctx);
+
+	/* Set up MSI-X routing */
+	ixv_configure_ivars(sc);
+
+	/* Set up auto-mask */
+	IXGBE_WRITE_REG(hw, IXGBE_VTEIAM, IXGBE_EICS_RTX_QUEUE);
+
+	/* Set moderation on the Link interrupt */
+	IXGBE_WRITE_REG(hw, IXGBE_VTEITR(sc->vector), IXGBE_LINK_ITR);
+
+	/* Config/Enable Link */
+	error = hw->mac.ops.get_link_state(hw, &sc->link_enabled);
+	if (error) {
+		/* PF is not capable of controlling VF state. Enable the link. */
+		sc->link_enabled = true;
+	} else if (sc->link_enabled == false)
+		device_printf(dev, "VF is disabled by PF\n");
+
+	hw->mac.ops.check_link(hw, &sc->link_speed, &sc->link_up,
+	    false);
+
+	/* And now turn on interrupts */
+	ixv_if_enable_intr(ctx);
+
+	return;
+} /* ixv_if_init */
+
+static const char *
+ixv_reset_error_desc(s32 error)
+{
+
+	switch (error) {
+	case IXGBE_ERR_RESET_FAILED:
+		return ("PF reset acknowledgement timed out");
+	case IXGBE_ERR_INVALID_MAC_ADDR:
+		/*
+		 * The shared VF reset code historically uses this error for an
+		 * unexpected reset reply, before it validates or copies the MAC.
+		 */
+		return ("PF returned an invalid VF reset response");
+	case IXGBE_ERR_MBX:
+	case IXGBE_ERR_MBX_NOMSG:
+	case IXGBE_ERR_TIMEOUT:
+		return ("PF mailbox reset exchange failed");
+	default:
+		return ("VF reset handshake failed");
+	}
+}
+
+/*
+ * Report each backoff stage, then limit the steady eight-second retry so a
+ * persistent PF outage does not spam the console.
+ */
+static bool
+ixv_mbx_log_allowed(struct ixgbe_softc *sc)
+{
+
+	if (sc->vf_mbx_retry_stage == nitems(ixv_mbx_retry_delay) - 1 &&
+	    !ratecheck(&sc->vf_mbx_last_log, &ixv_mbx_log_interval))
+		return (false);
+	return (true);
+}
+
+static void
+ixv_log_negotiate_failure(struct ixgbe_softc *sc, bool attaching)
+{
+
+	if (!ixv_mbx_log_allowed(sc))
+		return;
+	device_printf(sc->dev, "Mailbox API negotiation failed%s\n",
+	    attaching ? "; continuing attach" : "");
+}
+
+static void
+ixv_log_reset_failure(struct ixgbe_softc *sc, s32 error, bool attaching)
+{
+
+	if (!ixv_mbx_log_allowed(sc))
+		return;
+	device_printf(sc->dev, "%s (%d)%s\n", ixv_reset_error_desc(error),
+	    error, attaching ? "; continuing attach" : "");
+}
+
+/*
+ * A missing PF can make the posted reset handshake wait for a full mailbox
+ * timeout.  Keep that work out of stopped status paths.  An administratively
+ * up VF retries complete initialization with an exponential delay capped at
+ * eight seconds, so it recovers without creating a tight mailbox poller.
+ */
+static void
+ixv_mbx_retry_callout(void *arg)
+{
+	struct ixgbe_softc *sc;
+	if_t ifp;
+
+	sc = arg;
+	if (atomic_readandclear_32(&sc->vf_mbx_retry_pending) == 0 ||
+	    atomic_load_acq_32(&sc->vf_mbx_ready) != 0 ||
+	    iflib_in_detach(sc->ctx))
+		return;
+	ifp = iflib_get_ifp(sc->ctx);
+	if ((if_getflags(ifp) & IFF_UP) == 0)
+		return;
+
+	iflib_request_reset_if_up(sc->ctx);
+	iflib_admin_intr_deferred(sc->ctx);
+}
+
+static void
+ixv_mbx_retry_detach(struct ixgbe_softc *sc)
+{
+
+	if (!sc->vf_mbx_retry_initialized)
+		return;
+	atomic_readandclear_32(&sc->vf_mbx_retry_pending);
+	callout_drain(&sc->vf_mbx_retry);
+	sc->vf_mbx_retry_initialized = false;
+}
+
+static void
+ixv_mbx_retry_prepare(struct ixgbe_softc *sc)
+{
+
+	if (!sc->vf_mbx_retry_initialized)
+		return;
+	atomic_readandclear_32(&sc->vf_mbx_retry_pending);
+	callout_drain(&sc->vf_mbx_retry);
+}
+
+static void
+ixv_mbx_retry_stop(struct ixgbe_softc *sc)
+{
+	if_t ifp;
+
+	if (!sc->vf_mbx_retry_initialized)
+		return;
+	atomic_readandclear_32(&sc->vf_mbx_retry_pending);
+	callout_drain(&sc->vf_mbx_retry);
+	ifp = iflib_get_ifp(sc->ctx);
+	if ((if_getflags(ifp) & IFF_UP) == 0)
+		sc->vf_mbx_retry_stage = 0;
+}
+
+static void
+ixv_mbx_retry_failed(if_ctx_t ctx)
+{
+	struct ixgbe_softc *sc;
+	if_t ifp;
+	sbintime_t delay;
+	u_int stage;
+
+	sc = iflib_get_softc(ctx);
+	atomic_store_rel_32(&sc->vf_mbx_ready, 0);
+	sc->link_up = false;
+	if (sc->link_active) {
+		sc->link_active = false;
+		iflib_link_state_change(ctx, LINK_STATE_DOWN, 0);
+	}
+	iflib_init_failed(ctx);
+
+	ifp = iflib_get_ifp(ctx);
+	if (!sc->vf_mbx_retry_initialized ||
+	    (if_getflags(ifp) & IFF_UP) == 0)
+		return;
+	stage = sc->vf_mbx_retry_stage;
+	if (stage >= nitems(ixv_mbx_retry_delay))
+		stage = nitems(ixv_mbx_retry_delay) - 1;
+	delay = ixv_mbx_retry_delay[stage];
+	if (sc->vf_mbx_retry_stage + 1 < nitems(ixv_mbx_retry_delay))
+		sc->vf_mbx_retry_stage++;
+	atomic_set_32(&sc->vf_mbx_retry_pending, 1);
+	callout_reset_sbt(&sc->vf_mbx_retry, delay, 0,
+	    ixv_mbx_retry_callout, sc, C_PREL(1));
+}
+
+static void
+ixv_mbx_retry_succeeded(struct ixgbe_softc *sc)
+{
+
+	atomic_store_rel_32(&sc->vf_mbx_ready, 1);
+	atomic_readandclear_32(&sc->vf_mbx_retry_pending);
+	if (sc->vf_mbx_retry_initialized)
+		callout_stop(&sc->vf_mbx_retry);
+	sc->vf_mbx_retry_stage = 0;
+	sc->vf_link_mbx_failures = 0;
+	sc->vf_link_poll_tick =
+	    device_get_unit(sc->dev) % IXV_LINK_POLL_TICKS;
+	sc->vf_mbx_last_log.tv_sec = 0;
+	sc->vf_mbx_last_log.tv_usec = 0;
+}
+
+/************************************************************************
+ * ixv_enable_queue
+ ************************************************************************/
+static inline void
+ixv_enable_queue(struct ixgbe_softc *sc, u32 vector)
+{
+	struct ixgbe_hw *hw = &sc->hw;
+	u32 queue = 1 << vector;
+	u32 mask;
+
+	mask = (IXGBE_EIMS_RTX_QUEUE & queue);
+	IXGBE_WRITE_REG(hw, IXGBE_VTEIMS, mask);
+} /* ixv_enable_queue */
+
+/************************************************************************
+ * ixv_disable_queue
+ ************************************************************************/
+static inline void
+ixv_disable_queue(struct ixgbe_softc *sc, u32 vector)
+{
+	struct ixgbe_hw *hw = &sc->hw;
+	u64 queue = (u64)(1 << vector);
+	u32 mask;
+
+	mask = (IXGBE_EIMS_RTX_QUEUE & queue);
+	IXGBE_WRITE_REG(hw, IXGBE_VTEIMC, mask);
+} /* ixv_disable_queue */
+
+
+/************************************************************************
+ * ixv_msix_que - MSI-X Queue Interrupt Service routine
+ ************************************************************************/
+static int
+ixv_msix_que(void *arg)
+{
+	struct ix_rx_queue *que = arg;
+	struct ixgbe_softc *sc = que->sc;
+
+	ixv_disable_queue(sc, que->msix);
+	++que->irqs;
+
+	return (FILTER_SCHEDULE_THREAD);
+} /* ixv_msix_que */
+
+/************************************************************************
+ * ixv_msix_mbx
+ ************************************************************************/
+static int
+ixv_msix_mbx(void *arg)
+{
+	struct ixgbe_softc *sc = arg;
+	struct ixgbe_hw *hw = &sc->hw;
+	u32 reg;
+
+	++sc->link_irq;
+
+	/* First get the cause */
+	reg = IXGBE_READ_REG(hw, IXGBE_VTEICS);
+	/* Clear interrupt with write */
+	IXGBE_WRITE_REG(hw, IXGBE_VTEICR, reg);
+
+	/* The admin vector also carries PF mailbox notifications. */
+	iflib_admin_intr_deferred(sc->ctx);
+
+	IXGBE_WRITE_REG(hw, IXGBE_VTEIMS, IXGBE_EIMS_OTHER);
+
+	return (FILTER_HANDLED);
+} /* ixv_msix_mbx */
+
+/************************************************************************
+ * ixv_media_status - Media Ioctl callback
+ *
+ *   Called whenever the user queries the status of
+ *   the interface using ifconfig.
+ ************************************************************************/
+static void
+ixv_if_media_status(if_ctx_t ctx, struct ifmediareq * ifmr)
+{
+	struct ixgbe_softc *sc = iflib_get_softc(ctx);
+
+	INIT_DEBUGOUT("ixv_media_status: begin");
+
+	/* E610 link state is refreshed by the phased service timer. */
+	if (sc->hw.mac.type != ixgbe_mac_E610_vf ||
+	    sc->hw.api_version != ixgbe_mbox_api_16) {
+		atomic_set_32(&sc->vf_link_update, 1);
+		iflib_admin_intr_deferred(ctx);
+	}
+
+	ifmr->ifm_status = IFM_AVALID;
+	ifmr->ifm_active = IFM_ETHER;
+
+	if (!sc->link_active)
+		return;
+
+	ifmr->ifm_status |= IFM_ACTIVE;
+
+	switch (sc->link_speed) {
+		case IXGBE_LINK_SPEED_5GB_FULL:
+			ifmr->ifm_active |= IFM_5000_T | IFM_FDX;
+			break;
+		case IXGBE_LINK_SPEED_2_5GB_FULL:
+			ifmr->ifm_active |= IFM_2500_T | IFM_FDX;
+			break;
+		case IXGBE_LINK_SPEED_1GB_FULL:
+			ifmr->ifm_active |= IFM_1000_T | IFM_FDX;
+			break;
+		case IXGBE_LINK_SPEED_10GB_FULL:
+			ifmr->ifm_active |= IFM_10G_T | IFM_FDX;
+			break;
+		case IXGBE_LINK_SPEED_100_FULL:
+			ifmr->ifm_active |= IFM_100_TX | IFM_FDX;
+			break;
+		case IXGBE_LINK_SPEED_10_FULL:
+			ifmr->ifm_active |= IFM_10_T | IFM_FDX;
+			break;
+	}
+} /* ixv_if_media_status */
+
+/************************************************************************
+ * ixv_if_media_change - Media Ioctl callback
+ *
+ *   Called when the user changes speed/duplex using
+ *   media/mediopt option with ifconfig.
+ ************************************************************************/
+static int
+ixv_if_media_change(if_ctx_t ctx)
+{
+	struct ixgbe_softc *sc = iflib_get_softc(ctx);
+	struct ifmedia *ifm = iflib_get_media(ctx);
+
+	INIT_DEBUGOUT("ixv_media_change: begin");
+
+	if (IFM_TYPE(ifm->ifm_media) != IFM_ETHER)
+		return (EINVAL);
+
+	switch (IFM_SUBTYPE(ifm->ifm_media)) {
+	case IFM_AUTO:
+		break;
+	default:
+		device_printf(sc->dev, "Only auto media type\n");
+		return (EINVAL);
+	}
+
+	return (0);
+} /* ixv_if_media_change */
+
+
+/************************************************************************
+ * ixv_negotiate_api
+ *
+ *   Negotiate the Mailbox API with the PF;
+ *   start with the most featured API first.
+ ************************************************************************/
+static int
+ixv_negotiate_api(struct ixgbe_softc *sc)
+{
+	struct ixgbe_hw *hw = &sc->hw;
+	int mbx_api[] = {
+		ixgbe_mbox_api_13,
+		ixgbe_mbox_api_12,
+		ixgbe_mbox_api_11,
+		ixgbe_mbox_api_10,
+		ixgbe_mbox_api_unknown
+	};
+	int i = 0;
+
+	if (hw->mac.type == ixgbe_mac_E610_vf && !ixv_is_hyperv(hw) &&
+	    hw->mac.ops.negotiate_api_version(hw, ixgbe_mbox_api_16) == 0)
+		return (0);
+
+	while (mbx_api[i] != ixgbe_mbox_api_unknown) {
+		if (hw->mac.ops.negotiate_api_version(hw, mbx_api[i]) == 0)
+			return (0);
+		i++;
+	}
+
+	return (EINVAL);
+} /* ixv_negotiate_api */
+
+/************************************************************************
+ * ixv_queue_limit
+ *
+ *   Discover the number of symmetric RSS queue sets available to iflib.
+ ************************************************************************/
+static int
+ixv_queue_limit(struct ixgbe_softc *sc, bool mailbox_ready)
+{
+	struct ixgbe_hw *hw;
+	unsigned int default_tc, num_tcs;
+	int admin_vectors, limit, msix_vectors;
+
+	hw = &sc->hw;
+	if (ixv_is_hyperv(hw)) {
+		limit = ixgbevf_hv_get_queues(hw);
+	} else {
+		/* Preserve the current family limit as the mailbox fallback. */
+		switch (hw->mac.type) {
+		case ixgbe_mac_82599_vf:
+		case ixgbe_mac_X540_vf:
+			limit = 1;
+			break;
+		case ixgbe_mac_X550_vf:
+		case ixgbe_mac_X550EM_x_vf:
+		case ixgbe_mac_X550EM_a_vf:
+			limit = 2;
+			break;
+		case ixgbe_mac_E610_vf:
+			limit = 1;
+			break;
+		default:
+			return (1);
+		}
+	}
+
+	/* Replace the fallback with the queue grant reported by the PF. */
+	if (mailbox_ready) {
+		switch (hw->api_version) {
+		case ixgbe_mbox_api_11:
+		case ixgbe_mbox_api_12:
+		case ixgbe_mbox_api_13:
+		case ixgbe_mbox_api_16:
+			num_tcs = default_tc = 0;
+			if (ixgbevf_get_queues(hw, &num_tcs, &default_tc) == 0) {
+				limit = imin(hw->mac.max_tx_queues,
+				    hw->mac.max_rx_queues);
+				limit = imin(limit, 2);
+			}
+			break;
+		default:
+			break;
+		}
+	}
+
+	/*
+	 * iflib assigns one data vector to each queue set.  A VF has at most
+	 * three MSI-X vectors; reserve one of them for the mailbox interrupt.
+	 */
+	admin_vectors = iflib_get_sctx(sc->ctx)->isc_admin_intrcnt;
+	msix_vectors = pci_msix_count(sc->dev);
+	if (msix_vectors <= admin_vectors)
+		return (1);
+
+	return (imax(1, imin(limit, msix_vectors - admin_vectors)));
+} /* ixv_queue_limit */
+
+static int
+ixv_update_xcast_mode(struct ixgbe_softc *sc, int flags)
+{
+	if_t ifp;
+	int mode;
+
+	ifp = iflib_get_ifp(sc->ctx);
+	if (flags & IFF_PROMISC)
+		mode = IXGBEVF_XCAST_MODE_PROMISC;
+	else if ((flags & IFF_ALLMULTI) != 0 ||
+	    if_llmaddr_count(ifp) > IXGBE_MAX_VF_MC)
+		mode = IXGBEVF_XCAST_MODE_ALLMULTI;
+	else if (if_llmaddr_count(ifp) != 0)
+		mode = IXGBEVF_XCAST_MODE_MULTI;
+	else
+		mode = IXGBEVF_XCAST_MODE_NONE;
+	return (sc->hw.mac.ops.update_xcast_mode(&sc->hw, mode));
+}
+
+static int
+ixv_if_promisc_set(if_ctx_t ctx, int flags)
+{
+	struct ixgbe_softc *sc;
+
+	sc = iflib_get_softc(ctx);
+	if (!iflib_is_running(ctx))
+		return (0);
+	if (ixv_update_xcast_mode(sc, flags) != IXGBE_SUCCESS)
+		return (EOPNOTSUPP);
+	return (0);
+} /* ixv_if_promisc_set */
+
+
+static u_int
+ixv_if_multi_set_cb(void *cb_arg, struct sockaddr_dl *addr, u_int cnt)
+{
+	if (cnt >= MAX_NUM_MULTICAST_ADDRESSES)
+		return (0);
+
+	bcopy(LLADDR(addr),
+	    &((u8 *)cb_arg)[cnt * IXGBE_ETH_LENGTH_OF_ADDRESS],
+	    IXGBE_ETH_LENGTH_OF_ADDRESS);
+
+	return (1);
+}
+
+/************************************************************************
+ * ixv_if_multi_set - Multicast Update
+ *
+ *   Called whenever multicast address list is updated.
+ ************************************************************************/
+static void
+ixv_if_multi_set(if_ctx_t ctx)
+{
+	u8 mta[MAX_NUM_MULTICAST_ADDRESSES * IXGBE_ETH_LENGTH_OF_ADDRESS];
+	struct ixgbe_softc *sc = iflib_get_softc(ctx);
+	u8 *update_ptr;
+	if_t ifp = iflib_get_ifp(ctx);
+	int error, mcnt = 0;
+
+	IOCTL_DEBUGOUT("ixv_if_multi_set: begin");
+
+	mcnt = if_foreach_llmaddr(ifp, ixv_if_multi_set_cb, mta);
+
+	update_ptr = mta;
+
+	sc->hw.mac.ops.update_mc_addr_list(&sc->hw, update_ptr, mcnt,
+	    ixv_mc_array_itr, true);
+	error = ixv_update_xcast_mode(sc, if_getflags(ifp));
+	if (mcnt > IXGBE_MAX_VF_MC && error != IXGBE_SUCCESS) {
+		if (!sc->vf_mcast_overflow_warned)
+			device_printf(sc->dev,
+			    "PF rejected all-multicast fallback; only %d "
+			    "multicast addresses are active\n",
+			    IXGBE_MAX_VF_MC);
+		sc->vf_mcast_overflow_warned = true;
+	} else if (mcnt <= IXGBE_MAX_VF_MC)
+		sc->vf_mcast_overflow_warned = false;
+} /* ixv_if_multi_set */
+
+/************************************************************************
+ * ixv_mc_array_itr
+ *
+ *   An iterator function needed by the multicast shared code.
+ *   It feeds the shared code routine the addresses in the
+ *   array of ixv_set_multi() one by one.
+ ************************************************************************/
+static u8 *
+ixv_mc_array_itr(struct ixgbe_hw *hw, u8 **update_ptr, u32 *vmdq)
+{
+	u8 *addr = *update_ptr;
+	u8 *newptr;
+
+	*vmdq = 0;
+
+	newptr = addr + IXGBE_ETH_LENGTH_OF_ADDRESS;
+	*update_ptr = newptr;
+
+	return addr;
+} /* ixv_mc_array_itr */
+
+/************************************************************************
+ * ixv_if_local_timer - Timer routine
+ *
+ *   Checks for link status, updates statistics,
+ *   and runs the watchdog check.
+ ************************************************************************/
+static void
+ixv_if_local_timer(if_ctx_t ctx, uint16_t qid)
+{
+	struct ixgbe_softc *sc;
+
+	if (qid != 0)
+		return;
+
+	sc = iflib_get_softc(ctx);
+	atomic_set_32(&sc->vf_vlan_retry_tick, 1);
+	if (sc->hw.mac.type != ixgbe_mac_E610_vf ||
+	    sc->hw.api_version != ixgbe_mbox_api_16 ||
+	    ++sc->vf_link_poll_tick == IXV_LINK_POLL_TICKS) {
+		sc->vf_link_poll_tick = 0;
+		atomic_set_32(&sc->vf_link_update, 1);
+	}
+
+	/* Fire off the adminq task */
+	iflib_admin_intr_deferred(ctx);
+} /* ixv_if_local_timer */
+
+/************************************************************************
+ * ixv_if_update_admin_status - Update OS on link state
+ *
+ * Note: Only updates the OS on the cached link state.
+ *       The real check of the hardware only happens with
+ *       a link interrupt.
+ ************************************************************************/
+static void
+ixv_if_update_admin_status(if_ctx_t ctx)
+{
+	struct ixgbe_softc *sc = iflib_get_softc(ctx);
+	device_t dev = iflib_get_dev(ctx);
+	bool check_link, reset_seen;
+	s32 status;
+	uint64_t baudrate;
+
+	if (!iflib_is_running(ctx) ||
+	    atomic_load_acq_32(&sc->vf_mbx_ready) == 0) {
+		if (sc->link_active) {
+			sc->link_active = false;
+			iflib_link_state_change(ctx, LINK_STATE_DOWN, 0);
+		}
+		return;
+	}
+
+	check_link = atomic_readandclear_32(&sc->vf_link_update) != 0;
+	if (sc->hw.mac.type != ixgbe_mac_E610_vf ||
+	    sc->hw.api_version != ixgbe_mbox_api_16)
+		check_link = true;
+	/*
+	 * Hyper-V uses this indication only to invalidate cached VFLINKS
+	 * state; it does not expose the mailbox handshake needed to turn it
+	 * into a driver reset.  Its check_link operation samples the bit.
+	 */
+	reset_seen = !ixv_is_hyperv(&sc->hw) &&
+	    ixgbe_check_for_rst(&sc->hw, 0) == IXGBE_SUCCESS;
+	if (reset_seen)
+		sc->hw.mac.get_link_status = true;
+	if (check_link) {
+		sc->hw.mac.get_link_status = true;
+		status = ixgbe_check_link(&sc->hw, &sc->link_speed,
+		    &sc->link_up, false);
+	} else
+		status = IXGBE_SUCCESS;
+	if (sc->hw.mac.type == ixgbe_mac_E610_vf &&
+	    sc->hw.api_version == ixgbe_mbox_api_16 &&
+	    status != IXGBE_SUCCESS && status != IXGBE_ERR_MBX) {
+		/*
+		 * A busy PF can miss an individual link-state request.  Preserve
+		 * the last confirmed state across brief transport failures, but
+		 * bound how long stale carrier can remain visible if the PF is gone.
+		 */
+		if (sc->vf_link_mbx_failures < IXV_LINK_MBX_FAILURE_LIMIT)
+			sc->vf_link_mbx_failures++;
+		if (sc->vf_link_mbx_failures == IXV_LINK_MBX_FAILURE_LIMIT)
+			sc->link_up = false;
+		status = IXGBE_SUCCESS;
+	} else if (status == IXGBE_SUCCESS)
+		sc->vf_link_mbx_failures = 0;
+	/* Reinitialize after an unsolicited reset, even while link is down. */
+	if (reset_seen)
+		status = IXGBE_ERR_MBX;
+
+	if (status != IXGBE_SUCCESS && sc->hw.adapter_stopped == false) {
+		/* Mailbox's Clear To Send status is lost or timeout occurred.
+		 * We need reinitialization. */
+		sc->vf_rss_mrqc = 0;
+		iflib_request_reset(ctx);
+		iflib_admin_intr_deferred(ctx);
+	}
+
+	if (sc->link_up && sc->link_enabled) {
+		if (sc->link_active == false) {
+			if (bootverbose) {
+				baudrate = ixgbe_link_speed_to_baudrate(
+				    sc->link_speed);
+				if (baudrate != 0)
+					device_printf(dev,
+					    "Link is up %ju Mbps Full Duplex\n",
+					    (uintmax_t)(baudrate / IF_Mbps(1)));
+				else
+					device_printf(dev,
+					    "Link is up (speed unknown)\n");
+			}
+			sc->link_active = true;
+			iflib_link_state_change(ctx, LINK_STATE_UP,
+			    ixgbe_link_speed_to_baudrate(sc->link_speed));
+		}
+	} else { /* Link down */
+		if (sc->link_active == true) {
+			if (bootverbose)
+				device_printf(dev, "Link is Down\n");
+			iflib_link_state_change(ctx, LINK_STATE_DOWN,  0);
+			sc->link_active = false;
+		}
+	}
+
+	/* iflib closes admission before stop; do not replay after VF reset. */
+	if (iflib_is_running(ctx) &&
+	    atomic_readandclear_32(&sc->vf_vlan_retry_tick) != 0)
+		ixv_vlan_retry_tick(sc);
+
+	/* Do not treat a PF reset as a hardware-counter wrap. */
+	if (status == IXGBE_SUCCESS)
+		ixv_update_stats(sc);
+	else
+		sc->stats.vf.initialized = false;
+} /* ixv_if_update_admin_status */
+
+
+/************************************************************************
+ * ixv_if_stop - Stop the hardware
+ *
+ *   Disables all traffic on the adapter by issuing a
+ *   global reset on the MAC and deallocates TX/RX buffers.
+ ************************************************************************/
+static void
+ixv_if_stop(if_ctx_t ctx)
+{
+	struct ixgbe_softc *sc = iflib_get_softc(ctx);
+	struct ixgbe_hw *hw = &sc->hw;
+	if_t ifp = iflib_get_ifp(ctx);
+	bool mailbox_ready, reset_seen;
+
+	INIT_DEBUGOUT("ixv_stop: begin\n");
+	sc->vf_rss_mrqc = 0;
+
+	ixv_mbx_retry_stop(sc);
+	ixv_if_disable_intr(ctx);
+
+	mailbox_ready = atomic_load_acq_32(&sc->vf_mbx_ready) != 0;
+	reset_seen = mailbox_ready &&
+	    ixgbe_check_for_rst(hw, 0) == IXGBE_SUCCESS;
+	if (reset_seen)
+		sc->stats.vf.initialized = false;
+	else if (mailbox_ready && sc->stats.vf.initialized)
+		ixv_update_stats(sc);
+	if (mailbox_ready && (if_getflags(ifp) & IFF_UP) == 0) {
+		if (hw->mac.ops.reset_hw(hw) == IXGBE_SUCCESS)
+			ixv_init_stats(sc);
+		else
+			sc->stats.vf.initialized = false;
+	}
+	atomic_store_rel_32(&sc->vf_mbx_ready, 0);
+	sc->vf_link_mbx_failures = 0;
+	sc->hw.adapter_stopped = false;
+	hw->mac.ops.stop_adapter(hw);
+
+	/* Publish the stopped state without touching the PF mailbox. */
+	sc->link_up = false;
+	if (sc->link_active) {
+		sc->link_active = false;
+		iflib_link_state_change(ctx, LINK_STATE_DOWN, 0);
+	}
+} /* ixv_if_stop */
+
+
+/************************************************************************
+ * ixv_identify_hardware - Determine hardware revision.
+ ************************************************************************/
+static void
+ixv_identify_hardware(if_ctx_t ctx)
+{
+	struct ixgbe_softc *sc = iflib_get_softc(ctx);
+	device_t dev = iflib_get_dev(ctx);
+	struct ixgbe_hw *hw = &sc->hw;
+
+	/* Save off the information about this board */
+	hw->vendor_id = pci_get_vendor(dev);
+	hw->device_id = pci_get_device(dev);
+	hw->revision_id = pci_get_revid(dev);
+	hw->subsystem_vendor_id = pci_get_subvendor(dev);
+	hw->subsystem_device_id = pci_get_subdevice(dev);
+
+	/* A subset of set_mac_type */
+	switch (hw->device_id) {
+	case IXGBE_DEV_ID_82599_VF:
+	case IXGBE_DEV_ID_82599_VF_HV:
+		hw->mac.type = ixgbe_mac_82599_vf;
+		break;
+	case IXGBE_DEV_ID_X540_VF:
+	case IXGBE_DEV_ID_X540_VF_HV:
+		hw->mac.type = ixgbe_mac_X540_vf;
+		break;
+	case IXGBE_DEV_ID_X550_VF:
+	case IXGBE_DEV_ID_X550_VF_HV:
+		hw->mac.type = ixgbe_mac_X550_vf;
+		break;
+	case IXGBE_DEV_ID_X550EM_X_VF:
+	case IXGBE_DEV_ID_X550EM_X_VF_HV:
+		hw->mac.type = ixgbe_mac_X550EM_x_vf;
+		break;
+	case IXGBE_DEV_ID_X550EM_A_VF:
+	case IXGBE_DEV_ID_X550EM_A_VF_HV:
+		hw->mac.type = ixgbe_mac_X550EM_a_vf;
+		break;
+	case IXGBE_DEV_ID_E610_VF:
+		hw->mac.type = ixgbe_mac_E610_vf;
+		break;
+	default:
+		device_printf(dev, "unknown mac type\n");
+		hw->mac.type = ixgbe_mac_unknown;
+		break;
+	}
+} /* ixv_identify_hardware */
+
+static bool
+ixv_is_hyperv(const struct ixgbe_hw *hw)
+{
+	switch (hw->device_id) {
+	case IXGBE_DEV_ID_82599_VF_HV:
+	case IXGBE_DEV_ID_X540_VF_HV:
+	case IXGBE_DEV_ID_X550_VF_HV:
+	case IXGBE_DEV_ID_X550EM_X_VF_HV:
+	case IXGBE_DEV_ID_X550EM_A_VF_HV:
+		return (true);
+	case IXGBE_DEV_ID_E610_VF:
+		return (hw->subsystem_device_id ==
+		    IXGBE_SUBDEV_ID_E610_VF_HV);
+	default:
+		return (false);
+	}
+}
+
+/************************************************************************
+ * ixv_if_msix_intr_assign - Setup MSI-X Interrupt resources and handlers
+ ************************************************************************/
+static int
+ixv_if_msix_intr_assign(if_ctx_t ctx, int msix)
+{
+	struct ixgbe_softc *sc = iflib_get_softc(ctx);
+	device_t dev = iflib_get_dev(ctx);
+	struct ix_rx_queue *rx_que = sc->rx_queues;
+	struct ix_tx_queue *tx_que;
+	int error, rid, vector = 0;
+	char buf[16];
+
+	for (int i = 0; i < sc->num_rx_queues; i++, vector++, rx_que++) {
+		rid = vector + 1;
+
+		snprintf(buf, sizeof(buf), "rxq%d", i);
+		error = iflib_irq_alloc_generic(ctx, &rx_que->que_irq, rid,
+		    IFLIB_INTR_RXTX, ixv_msix_que, rx_que, rx_que->rxr.me,
+		    buf);
+
+		if (error) {
+			device_printf(iflib_get_dev(ctx),
+			    "Failed to allocate que int %d err: %d",
+			    i, error);
+			sc->num_rx_queues = i + 1;
+			goto fail;
+		}
+
+		rx_que->msix = vector;
+	}
+
+	for (int i = 0; i < sc->num_tx_queues; i++) {
+		snprintf(buf, sizeof(buf), "txq%d", i);
+		tx_que = &sc->tx_queues[i];
+		tx_que->msix = i % sc->num_rx_queues;
+		iflib_softirq_alloc_generic(ctx,
+		    &sc->rx_queues[tx_que->msix].que_irq,
+		    IFLIB_INTR_TX, tx_que, tx_que->txr.me, buf);
+	}
+	rid = vector + 1;
+	error = iflib_irq_alloc_generic(ctx, &sc->irq, rid,
+	    IFLIB_INTR_ADMIN, ixv_msix_mbx, sc, 0, "aq");
+	if (error) {
+		device_printf(iflib_get_dev(ctx),
+		    "Failed to register admin handler");
+		return (error);
+	}
+
+	sc->vector = vector;
+	/*
+	 * Due to a broken design QEMU will fail to properly
+	 * enable the guest for MSIX unless the vectors in
+	 * the table are all set up, so we must rewrite the
+	 * ENABLE in the MSIX control register again at this
+	 * point to cause it to successfully initialize us.
+	 */
+	if (sc->hw.mac.type == ixgbe_mac_82599_vf) {
+		int msix_ctrl;
+		if (pci_find_cap(dev, PCIY_MSIX, &rid)) {
+			device_printf(dev,
+			    "Finding MSIX capability failed\n");
+		} else {
+			rid += PCIR_MSIX_CTRL;
+			msix_ctrl = pci_read_config(dev, rid, 2);
+			msix_ctrl |= PCIM_MSIXCTRL_MSIX_ENABLE;
+			pci_write_config(dev, rid, msix_ctrl, 2);
+		}
+	}
+
+	return (0);
+
+fail:
+	iflib_irq_free(ctx, &sc->irq);
+	rx_que = sc->rx_queues;
+	for (int i = 0; i < sc->num_rx_queues; i++, rx_que++)
+		iflib_irq_free(ctx, &rx_que->que_irq);
+
+	return (error);
+} /* ixv_if_msix_intr_assign */
+
+/************************************************************************
+ * ixv_allocate_pci_resources
+ ************************************************************************/
+static int
+ixv_allocate_pci_resources(if_ctx_t ctx)
+{
+	struct ixgbe_softc *sc = iflib_get_softc(ctx);
+	device_t dev = iflib_get_dev(ctx);
+	int rid;
+
+	rid = PCIR_BAR(0);
+	sc->pci_mem = bus_alloc_resource_any(dev, SYS_RES_MEMORY, &rid,
+	    RF_ACTIVE);
+
+	if (!(sc->pci_mem)) {
+		device_printf(dev,
+		    "Unable to allocate bus resource: memory\n");
+		return (ENXIO);
+	}
+
+	sc->osdep.mem_bus_space_tag = rman_get_bustag(sc->pci_mem);
+	sc->osdep.mem_bus_space_handle = rman_get_bushandle(sc->pci_mem);
+	sc->hw.hw_addr = (u8 *)&sc->osdep.mem_bus_space_handle;
+
+	return (0);
+} /* ixv_allocate_pci_resources */
+
+/************************************************************************
+ * ixv_free_pci_resources
+ ************************************************************************/
+static void
+ixv_free_pci_resources(if_ctx_t ctx)
+{
+	struct ixgbe_softc *sc = iflib_get_softc(ctx);
+	struct ix_rx_queue *que = sc->rx_queues;
+	device_t dev = iflib_get_dev(ctx);
+
+	/* Release all MSI-X queue resources */
+	if (sc->intr_type == IFLIB_INTR_MSIX)
+		iflib_irq_free(ctx, &sc->irq);
+
+	if (que != NULL) {
+		for (int i = 0; i < sc->num_rx_queues; i++, que++) {
+			iflib_irq_free(ctx, &que->que_irq);
+		}
+	}
+
+	if (sc->pci_mem != NULL)
+		bus_release_resource(dev, SYS_RES_MEMORY,
+		    rman_get_rid(sc->pci_mem), sc->pci_mem);
+} /* ixv_free_pci_resources */
+
+/************************************************************************
+ * ixv_setup_interface
+ *
+ *   Setup networking device structure and register an interface.
+ ************************************************************************/
+static int
+ixv_setup_interface(if_ctx_t ctx)
+{
+	struct ixgbe_softc *sc = iflib_get_softc(ctx);
+	if_softc_ctx_t scctx = sc->shared;
+	if_t ifp = iflib_get_ifp(ctx);
+
+	INIT_DEBUGOUT("ixv_setup_interface: begin");
+
+	if_setbaudrate(ifp, IF_Gbps(10));
+	if_setsendqlen(ifp, scctx->isc_ntxd[0] - 2);
+
+
+	sc->max_frame_size = if_getmtu(ifp) + IXGBE_MTU_HDR;
+	ifmedia_add(sc->media, IFM_ETHER | IFM_AUTO, 0, NULL);
+	ifmedia_set(sc->media, IFM_ETHER | IFM_AUTO);
+
+	return 0;
+} /* ixv_setup_interface */
+
+/************************************************************************
+ * ixv_if_get_counter
+ ************************************************************************/
+static uint64_t
+ixv_if_get_counter(if_ctx_t ctx, ift_counter cnt)
+{
+	struct ixgbe_softc *sc = iflib_get_softc(ctx);
+	if_t ifp = iflib_get_ifp(ctx);
+
+	switch (cnt) {
+	case IFCOUNTER_IPACKETS:
+		return (sc->ipackets);
+	case IFCOUNTER_OPACKETS:
+		return (sc->opackets);
+	case IFCOUNTER_IBYTES:
+		return (sc->ibytes);
+	case IFCOUNTER_OBYTES:
+		return (sc->obytes);
+	case IFCOUNTER_IMCASTS:
+		return (sc->imcasts);
+	default:
+		return (if_get_counter_default(ifp, cnt));
+	}
+} /* ixv_if_get_counter */
+
+/* ixv_if_needs_restart - Tell iflib when the driver needs to be reinitialized
+ * @ctx: iflib context
+ * @event: event code to check
+ *
+ * Defaults to returning true for every event.
+ *
+ * @returns true if iflib needs to reinit the interface
+ */
+static bool
+ixv_if_needs_restart(if_ctx_t ctx __unused, enum iflib_restart_event event)
+{
+	switch (event) {
+	case IFLIB_RESTART_VLAN_CONFIG:
+		/* The callbacks update the PF directly and queue failed work. */
+		return (false);
+	default:
+		return (true);
+	}
+}
+
+/************************************************************************
+ * ixv_initialize_transmit_units - Enable transmit unit.
+ ************************************************************************/
+static void
+ixv_initialize_transmit_units(if_ctx_t ctx)
+{
+	struct ixgbe_softc *sc = iflib_get_softc(ctx);
+	struct ixgbe_hw *hw = &sc->hw;
+	if_softc_ctx_t scctx = sc->shared;
+	struct ix_tx_queue *que = sc->tx_queues;
+	int i;
+
+	for (i = 0; i < sc->num_tx_queues; i++, que++) {
+		struct tx_ring *txr = &que->txr;
+		u64 tdba = txr->tx_paddr;
+		u32 txctrl, txdctl;
+		int j = txr->me;
+
+		txdctl = IXGBE_READ_REG(hw, IXGBE_VFTXDCTL(j));
+		txdctl &= ~IXGBE_TXDCTL_THRESH_MASK;
+		txdctl |= IXGBE_TXDCTL_THRESH_DEFAULT;
+		IXGBE_WRITE_REG(hw, IXGBE_VFTXDCTL(j), txdctl);
+
+		/* Set the HW Tx Head and Tail indices */
+		IXGBE_WRITE_REG(&sc->hw, IXGBE_VFTDH(j), 0);
+		IXGBE_WRITE_REG(&sc->hw, IXGBE_VFTDT(j), 0);
+
+		/* Set Tx Tail register */
+		txr->tail = IXGBE_VFTDT(j);
+
+		txr->tx_rs_cidx = txr->tx_rs_pidx;
+		/* Initialize the last processed descriptor to be the end of
+		 * the ring, rather than the start, so that we avoid an
+		 * off-by-one error when calculating how many descriptors are
+		 * done in the credits_update function.
+		 */
+		txr->tx_cidx_processed = scctx->isc_ntxd[0] - 1;
+		for (int k = 0; k < scctx->isc_ntxd[0]; k++)
+			txr->tx_rsq[k] = QIDX_INVALID;
+
+		/* Set Ring parameters */
+		IXGBE_WRITE_REG(hw, IXGBE_VFTDBAL(j),
+		    (tdba & 0x00000000ffffffffULL));
+		IXGBE_WRITE_REG(hw, IXGBE_VFTDBAH(j), (tdba >> 32));
+		IXGBE_WRITE_REG(hw, IXGBE_VFTDLEN(j),
+		    scctx->isc_ntxd[0] * sizeof(struct ixgbe_legacy_tx_desc));
+		txctrl = IXGBE_READ_REG(hw, IXGBE_VFDCA_TXCTRL(j));
+		txctrl &= ~IXGBE_DCA_TXCTRL_DESC_WRO_EN;
+		IXGBE_WRITE_REG(hw, IXGBE_VFDCA_TXCTRL(j), txctrl);
+
+		/* Now enable */
+		txdctl = IXGBE_READ_REG(hw, IXGBE_VFTXDCTL(j));
+		txdctl |= IXGBE_TXDCTL_ENABLE;
+		IXGBE_WRITE_REG(hw, IXGBE_VFTXDCTL(j), txdctl);
+	}
+
+	return;
+} /* ixv_initialize_transmit_units */
+
+/************************************************************************
+ * ixv_initialize_rss_mapping
+ ************************************************************************/
+static void
+ixv_initialize_rss_mapping(struct ixgbe_softc *sc)
+{
+	struct ixgbe_hw *hw = &sc->hw;
+	u32 reta = 0, mrqc;
+	int queue_id;
+	int i, j;
+	u32 rss_hash_config;
+
+	rss_getkey((uint8_t *)sc->vf_rss_key);
+
+	/* Now fill out hash function seeds */
+	for (u_int k = 0; k < nitems(sc->vf_rss_key); k++)
+		IXGBE_WRITE_REG(hw, IXGBE_VFRSSRK(k), sc->vf_rss_key[k]);
+
+	/* Set up the redirection table */
+	for (i = 0, j = 0; i < 64; i++, j++) {
+		if (j == sc->num_rx_queues)
+			j = 0;
+
+		if (sc->feat_en & IXGBE_FEATURE_RSS) {
+			/*
+			 * Fetch the RSS bucket id for the given indirection
+			 * entry. Cap it at the number of configured buckets
+			 * (which is num_rx_queues.)
+			 */
+			queue_id = rss_get_indirection_to_bucket(i);
+			queue_id = queue_id % sc->num_rx_queues;
+		} else
+			queue_id = j;
+
+		/*
+		 * The low 8 bits are for hash value (n+0);
+		 * The next 8 bits are for hash value (n+1), etc.
+		 */
+		reta >>= 8;
+		reta |= ((uint32_t)queue_id) << 24;
+		if ((i & 3) == 3) {
+			IXGBE_WRITE_REG(hw, IXGBE_VFRETA(i >> 2), reta);
+			reta = 0;
+		}
+	}
+
+	/* Perform hash on these packet types */
+	if (sc->feat_en & IXGBE_FEATURE_RSS)
+		rss_hash_config = rss_gethashconfig();
+	else {
+		/*
+		 * Disable UDP - IP fragments aren't currently being handled
+		 * and so we end up with a mix of 2-tuple and 4-tuple
+		 * traffic.
+		 */
+		rss_hash_config = RSS_HASHTYPE_RSS_IPV4
+		                | RSS_HASHTYPE_RSS_TCP_IPV4
+		                | RSS_HASHTYPE_RSS_IPV6
+		                | RSS_HASHTYPE_RSS_TCP_IPV6;
+	}
+
+	mrqc = IXGBE_MRQC_RSSEN;
+	if (rss_hash_config & RSS_HASHTYPE_RSS_IPV4)
+		mrqc |= IXGBE_MRQC_RSS_FIELD_IPV4;
+	if (rss_hash_config & RSS_HASHTYPE_RSS_TCP_IPV4)
+		mrqc |= IXGBE_MRQC_RSS_FIELD_IPV4_TCP;
+	if (rss_hash_config & RSS_HASHTYPE_RSS_IPV6)
+		mrqc |= IXGBE_MRQC_RSS_FIELD_IPV6;
+	if (rss_hash_config & RSS_HASHTYPE_RSS_TCP_IPV6)
+		mrqc |= IXGBE_MRQC_RSS_FIELD_IPV6_TCP;
+	if (rss_hash_config & RSS_HASHTYPE_RSS_IPV6_EX)
+		device_printf(sc->dev,
+		    "%s: RSS_HASHTYPE_RSS_IPV6_EX defined,"
+		    " but not supported\n", __func__);
+	if (rss_hash_config & RSS_HASHTYPE_RSS_TCP_IPV6_EX)
+		device_printf(sc->dev,
+		    "%s: RSS_HASHTYPE_RSS_TCP_IPV6_EX defined,"
+		    " but not supported\n", __func__);
+	if (rss_hash_config & RSS_HASHTYPE_RSS_UDP_IPV4)
+		mrqc |= IXGBE_MRQC_RSS_FIELD_IPV4_UDP;
+	if (rss_hash_config & RSS_HASHTYPE_RSS_UDP_IPV6)
+		mrqc |= IXGBE_MRQC_RSS_FIELD_IPV6_UDP;
+	if (rss_hash_config & RSS_HASHTYPE_RSS_UDP_IPV6_EX)
+		device_printf(sc->dev,
+		    "%s: RSS_HASHTYPE_RSS_UDP_IPV6_EX defined,"
+		    " but not supported\n", __func__);
+	IXGBE_WRITE_REG(hw, IXGBE_VFMRQC, mrqc);
+	sc->vf_rss_mrqc = mrqc;
+} /* ixv_initialize_rss_mapping */
+
+#define BSIZEPKT_ROUNDUP ((1<<IXGBE_SRRCTL_BSIZEPKT_SHIFT)-1)
+/************************************************************************
+ * ixv_initialize_receive_units - Setup receive registers and features.
+ ************************************************************************/
+static void
+ixv_initialize_receive_units(if_ctx_t ctx)
+{
+	struct ixgbe_softc *sc = iflib_get_softc(ctx);
+	if_softc_ctx_t scctx;
+	struct ixgbe_hw *hw = &sc->hw;
+#ifdef DEV_NETMAP
+	if_t ifp = iflib_get_ifp(ctx);
+#endif
+	struct ix_rx_queue *que = sc->rx_queues;
+	u32 bufsz, psrtype;
+
+	bufsz = (sc->rx_mbuf_sz + BSIZEPKT_ROUNDUP) >>
+	    IXGBE_SRRCTL_BSIZEPKT_SHIFT;
+
+	psrtype = IXGBE_PSRTYPE_TCPHDR |
+	    IXGBE_PSRTYPE_UDPHDR |
+	    IXGBE_PSRTYPE_IPV4HDR |
+	    IXGBE_PSRTYPE_IPV6HDR |
+	    IXGBE_PSRTYPE_L2HDR;
+
+	if (sc->num_rx_queues > 1)
+		psrtype |= 1 << 29;
+
+	IXGBE_WRITE_REG(hw, IXGBE_VFPSRTYPE, psrtype);
+
+	/* Tell PF our max_frame size */
+	if (hw->mac.ops.set_rlpml(hw, sc->max_frame_size) != 0) {
+		device_printf(sc->dev,
+		    "There is a problem with the PF setup.  It is likely the"
+		    " receive unit for this VF will not function correctly."
+		    "\n");
+	}
+	scctx = sc->shared;
+
+	for (int i = 0; i < sc->num_rx_queues; i++, que++) {
+		struct rx_ring *rxr = &que->rxr;
+		u64 rdba = rxr->rx_paddr;
+		u32 reg, rxdctl;
+		int j = rxr->me;
+
+		/* Disable the queue */
+		rxdctl = IXGBE_READ_REG(hw, IXGBE_VFRXDCTL(j));
+		rxdctl &= ~IXGBE_RXDCTL_ENABLE;
+		IXGBE_WRITE_REG(hw, IXGBE_VFRXDCTL(j), rxdctl);
+		for (int k = 0; k < 10; k++) {
+			if (IXGBE_READ_REG(hw, IXGBE_VFRXDCTL(j)) &
+			    IXGBE_RXDCTL_ENABLE)
+				msec_delay(1);
+			else
+				break;
+		}
+		wmb();
+		/* Setup the Base and Length of the Rx Descriptor Ring */
+		IXGBE_WRITE_REG(hw, IXGBE_VFRDBAL(j),
+		    (rdba & 0x00000000ffffffffULL));
+		IXGBE_WRITE_REG(hw, IXGBE_VFRDBAH(j), (rdba >> 32));
+		IXGBE_WRITE_REG(hw, IXGBE_VFRDLEN(j),
+		    scctx->isc_nrxd[0] * sizeof(union ixgbe_adv_rx_desc));
+
+		/* Reset the ring indices */
+		IXGBE_WRITE_REG(hw, IXGBE_VFRDH(rxr->me), 0);
+		IXGBE_WRITE_REG(hw, IXGBE_VFRDT(rxr->me), 0);
+
+		/* Set up the SRRCTL register */
+		reg = IXGBE_READ_REG(hw, IXGBE_VFSRRCTL(j));
+		reg &= ~IXGBE_SRRCTL_BSIZEHDR_MASK;
+		reg &= ~IXGBE_SRRCTL_BSIZEPKT_MASK;
+		reg |= bufsz;
+		reg |= IXGBE_SRRCTL_DESCTYPE_ADV_ONEBUF;
+		IXGBE_WRITE_REG(hw, IXGBE_VFSRRCTL(j), reg);
+
+		/* Capture Rx Tail index */
+		rxr->tail = IXGBE_VFRDT(rxr->me);
+
+		/* Do the queue enabling last */
+		rxdctl |= IXGBE_RXDCTL_ENABLE | IXGBE_RXDCTL_VME;
+		IXGBE_WRITE_REG(hw, IXGBE_VFRXDCTL(j), rxdctl);
+		for (int l = 0; l < 10; l++) {
+			if (IXGBE_READ_REG(hw, IXGBE_VFRXDCTL(j)) &
+			    IXGBE_RXDCTL_ENABLE)
+				break;
+			msec_delay(1);
+		}
+		wmb();
+
+		/* Set the Tail Pointer */
+#ifdef DEV_NETMAP
+		/*
+		 * In netmap mode, we must preserve the buffers made
+		 * available to userspace before the if_init()
+		 * (this is true by default on the TX side, because
+		 * init makes all buffers available to userspace).
+		 *
+		 * netmap_reset() and the device specific routines
+		 * (e.g. ixgbe_setup_receive_rings()) map these
+		 * buffers at the end of the NIC ring, so here we
+		 * must set the RDT (tail) register to make sure
+		 * they are not overwritten.
+		 *
+		 * In this driver the NIC ring starts at RDH = 0,
+		 * RDT points to the last slot available for reception (?),
+		 * so RDT = num_rx_desc - 1 means the whole ring is available.
+		 */
+		if (if_getcapenable(ifp) & IFCAP_NETMAP) {
+			struct netmap_adapter *na = NA(ifp);
+			struct netmap_kring *kring = na->rx_rings[j];
+			int t = na->num_rx_desc - 1 - nm_kr_rxspace(kring);
+
+			IXGBE_WRITE_REG(hw, IXGBE_VFRDT(rxr->me), t);
+		} else
+#endif /* DEV_NETMAP */
+			IXGBE_WRITE_REG(hw, IXGBE_VFRDT(rxr->me),
+			    scctx->isc_nrxd[0] - 1);
+	}
+
+	/*
+	 * Do not touch RSS and RETA settings for older hardware
+	 * as those are shared among PF and all VF.
+	 */
+	if (sc->hw.mac.type >= ixgbe_mac_X550_vf)
+		ixv_initialize_rss_mapping(sc);
+} /* ixv_initialize_receive_units */
+
+/************************************************************************
+ * VF VLAN mailbox retry helpers
+ ************************************************************************/
+static bool
+ixv_vlan_error_retryable(s32 error)
+{
+	return (error != IXGBE_ERR_FEATURE_NOT_SUPPORTED);
+}
+
+static void
+ixv_vlan_retry_add(struct ixgbe_softc *sc, u16 vid)
+{
+	bool pending;
+
+	pending = ixv_vlan_retry_pending(sc);
+	sc->vf_vfta_retry[vid >> 5] |= 1U << (vid & 0x1f);
+	/* Start a bounded no-progress window when work becomes pending. */
+	if (!pending || sc->vf_vlan_retry_deadline == 0)
+		sc->vf_vlan_retry_deadline =
+		    getsbinuptime() + IXV_VLAN_RETRY_WINDOW;
+}
+
+static void
+ixv_vlan_retry_clear(struct ixgbe_softc *sc, u16 vid)
+{
+	u32 bit;
+	bool pending;
+
+	bit = 1U << (vid & 0x1f);
+	pending = (sc->vf_vfta_retry[vid >> 5] & bit) != 0;
+	sc->vf_vfta_retry[vid >> 5] &= ~bit;
+	if (!pending) {
+		/* A successful mailbox operation proves the PF is responsive. */
+		if (sc->vf_vlan_retry_deadline == 0 &&
+		    ixv_vlan_retry_pending(sc))
+			sc->vf_vlan_retry_deadline =
+			    getsbinuptime() + IXV_VLAN_RETRY_WINDOW;
+		return;
+	}
+	if (ixv_vlan_retry_pending(sc))
+		sc->vf_vlan_retry_deadline =
+		    getsbinuptime() + IXV_VLAN_RETRY_WINDOW;
+	else
+		sc->vf_vlan_retry_deadline = 0;
+}
+
+static bool
+ixv_vlan_retry_pending(const struct ixgbe_softc *sc)
+{
+	int i;
+
+	for (i = 0; i < IXGBE_VFTA_SIZE; i++)
+		if (sc->vf_vfta_retry[i] != 0)
+			return (true);
+	return (false);
+}
+
+static void
+ixv_vlan_retry_tick(struct ixgbe_softc *sc)
+{
+	struct ixgbe_hw *hw;
+	bool enable;
+	s32 error;
+	u32 bit;
+	u16 vid;
+	int attempts, i, remaining;
+
+	if (!ixv_vlan_retry_pending(sc)) {
+		sc->vf_vlan_retry_deadline = 0;
+		return;
+	}
+	/*
+	 * Exhausted entries remain dormant until reset, a VLAN callback, or
+	 * another successful VLAN mailbox request.
+	 */
+	if (sc->vf_vlan_retry_deadline == 0)
+		return;
+	if (getsbinuptime() >= sc->vf_vlan_retry_deadline) {
+		remaining = 0;
+		for (i = 0; i < IXGBE_VFTA_SIZE; i++)
+			remaining += bitcount32(sc->vf_vfta_retry[i]);
+		sc->vf_vlan_retry_deadline = 0;
+		device_printf(sc->dev,
+		    "VF VLAN retries exhausted for %d VIDs\n", remaining);
+		return;
+	}
+
+	/*
+	 * A mailbox NACK does not distinguish transient PF unavailability
+	 * from a permanent policy rejection or VLVF exhaustion.  Reconcile a
+	 * bounded batch per timer tick so none of those cases creates a busy
+	 * mailbox poller.  Stop after the first failure so a silent PF can
+	 * consume at most one mailbox timeout per pass, while a responsive PF
+	 * can drain several successful requests.
+	 */
+	hw = &sc->hw;
+	for (attempts = 0, i = 0;
+	    attempts < IXV_VLAN_RETRY_BATCH && i < 4096; i++) {
+		vid = sc->vf_vlan_retry_cursor;
+		sc->vf_vlan_retry_cursor = (vid + 1) & 0xfff;
+		bit = 1U << (vid & 0x1f);
+		if ((sc->vf_vfta_retry[vid >> 5] & bit) == 0)
+			continue;
+		attempts++;
+		enable = (sc->shadow_vfta[vid >> 5] & bit) != 0;
+		error = hw->mac.ops.set_vfta(hw, vid, 0, enable, false);
+		if (error != IXGBE_SUCCESS && ixv_vlan_error_retryable(error))
+			break;
+		ixv_vlan_retry_clear(sc, vid);
+	}
+}
+
+/************************************************************************
+ * ixv_setup_vlan_support - Configure and restore VLAN support
+ ************************************************************************/
+static void
+ixv_setup_vlan_support(if_ctx_t ctx)
+{
+	if_t ifp = iflib_get_ifp(ctx);
+	struct ixgbe_softc *sc = iflib_get_softc(ctx);
+	struct ixgbe_hw *hw = &sc->hw;
+	s32 error;
+	u32 ctrl, vfta;
+	u16 vid;
+	int restore_failures;
+
+	for (int i = 0; i < sc->num_rx_queues; i++) {
+		ctrl = IXGBE_READ_REG(hw, IXGBE_VFRXDCTL(i));
+		if (if_getcapenable(ifp) & IFCAP_VLAN_HWTAGGING) {
+			ctrl |= IXGBE_RXDCTL_VME;
+			sc->rx_queues[i].rxr.vtag_strip = true;
+		} else {
+			ctrl &= ~IXGBE_RXDCTL_VME;
+			sc->rx_queues[i].rxr.vtag_strip = false;
+		}
+		IXGBE_WRITE_REG(hw, IXGBE_VFRXDCTL(i), ctrl);
+	}
+
+	/*
+	 * The PF controls the pool membership independently of the VF's local
+	 * HWFILTER capability.  A reset removes those memberships, so replay
+	 * every registered VLAN through the mailbox.
+	 *
+	 * Keep failed removal requests pending as well.  They are harmless and
+	 * idempotent after a successful reset, and still needed if the reset
+	 * handshake did not reach the PF.
+	 */
+	sc->vf_vlan_retry_deadline = 0;
+	sc->vf_vlan_retry_cursor = 0;
+	restore_failures = 0;
+	for (int i = 0; i < IXGBE_VFTA_SIZE; i++) {
+		if (sc->shadow_vfta[i] == 0)
+			continue;
+		vfta = sc->shadow_vfta[i];
+		for (int j = 0; j < 32; j++) {
+			if ((vfta & (1U << j)) == 0)
+				continue;
+			vid = (i * 32) + j;
+			/* One timeout is enough to declare this replay deferred. */
+			if (restore_failures == 0)
+				error = hw->mac.ops.set_vfta(hw, vid, 0, true,
+				    false);
+			else
+				error = IXGBE_ERR_MBX;
+			if (error != IXGBE_SUCCESS &&
+			    ixv_vlan_error_retryable(error)) {
+				ixv_vlan_retry_add(sc, vid);
+				restore_failures++;
+			} else
+				ixv_vlan_retry_clear(sc, vid);
+		}
+	}
+	if (ixv_vlan_retry_pending(sc))
+		sc->vf_vlan_retry_deadline =
+		    getsbinuptime() + IXV_VLAN_RETRY_WINDOW;
+	if (restore_failures != 0)
+		device_printf(sc->dev,
+		    "VF VLAN restore failed for %d VIDs; retrying\n",
+		    restore_failures);
+} /* ixv_setup_vlan_support */
+
+/************************************************************************
+ * ixv_if_register_vlan
+ *
+ *   Run via a vlan config EVENT, it enables us to use the
+ *   HW Filter table since we can get the vlan id.
+ ************************************************************************/
+static void
+ixv_if_register_vlan(if_ctx_t ctx, u16 vtag)
+{
+	struct ixgbe_softc *sc = iflib_get_softc(ctx);
+	bool pending, present;
+	u32 index, mask;
+	s32 error;
+
+	index = (vtag >> 5) & 0x7F;
+	mask = 1U << (vtag & 0x1F);
+	present = (sc->shadow_vfta[index] & mask) != 0;
+	pending = (sc->vf_vfta_retry[index] & mask) != 0;
+	sc->shadow_vfta[index] |= mask;
+	if (!present)
+		++sc->num_vlans;
+	if (present && !pending)
+		return;
+
+	error = sc->hw.mac.ops.set_vfta(&sc->hw, vtag, 0, true, false);
+	if (error != IXGBE_SUCCESS && ixv_vlan_error_retryable(error)) {
+		ixv_vlan_retry_add(sc, vtag);
+		if (!pending)
+			device_printf(sc->dev,
+			    "VF VLAN %u add request failed; retrying\n", vtag);
+	} else
+		ixv_vlan_retry_clear(sc, vtag);
+} /* ixv_if_register_vlan */
+
+/************************************************************************
+ * ixv_if_unregister_vlan
+ *
+ *   Run via a vlan unconfig EVENT, remove our entry
+ *   in the soft vfta.
+ ************************************************************************/
+static void
+ixv_if_unregister_vlan(if_ctx_t ctx, u16 vtag)
+{
+	struct ixgbe_softc *sc = iflib_get_softc(ctx);
+	bool pending, present;
+	u32 index, mask;
+	s32 error;
+
+	index = (vtag >> 5) & 0x7F;
+	mask = 1U << (vtag & 0x1F);
+	present = (sc->shadow_vfta[index] & mask) != 0;
+	pending = (sc->vf_vfta_retry[index] & mask) != 0;
+	sc->shadow_vfta[index] &= ~mask;
+	if (present)
+		--sc->num_vlans;
+	if (!present && !pending)
+		return;
+
+	error = sc->hw.mac.ops.set_vfta(&sc->hw, vtag, 0, false, false);
+	if (error != IXGBE_SUCCESS && ixv_vlan_error_retryable(error)) {
+		ixv_vlan_retry_add(sc, vtag);
+		if (!pending)
+			device_printf(sc->dev,
+			    "VF VLAN %u remove request failed; "
+			    "retrying\n", vtag);
+	} else
+		ixv_vlan_retry_clear(sc, vtag);
+} /* ixv_if_unregister_vlan */
+
+/************************************************************************
+ * ixv_if_enable_intr
+ ************************************************************************/
+static void
+ixv_if_enable_intr(if_ctx_t ctx)
+{
+	struct ixgbe_softc *sc = iflib_get_softc(ctx);
+	struct ixgbe_hw *hw = &sc->hw;
+	struct ix_rx_queue *que = sc->rx_queues;
+	u32 mask = (IXGBE_EIMS_ENABLE_MASK & ~IXGBE_EIMS_RTX_QUEUE);
+
+	if (hw->adapter_stopped ||
+	    atomic_load_acq_32(&sc->vf_mbx_ready) == 0)
+		return;
+
+	IXGBE_WRITE_REG(hw, IXGBE_VTEIMS, mask);
+
+	mask = IXGBE_EIMS_ENABLE_MASK;
+	mask &= ~(IXGBE_EIMS_OTHER | IXGBE_EIMS_LSC);
+	IXGBE_WRITE_REG(hw, IXGBE_VTEIAC, mask);
+
+	for (int i = 0; i < sc->num_rx_queues; i++, que++)
+		ixv_enable_queue(sc, que->msix);
+
+	IXGBE_WRITE_FLUSH(hw);
+} /* ixv_if_enable_intr */
+
+/************************************************************************
+ * ixv_if_disable_intr
+ ************************************************************************/
+static void
+ixv_if_disable_intr(if_ctx_t ctx)
+{
+	struct ixgbe_softc *sc = iflib_get_softc(ctx);
+	IXGBE_WRITE_REG(&sc->hw, IXGBE_VTEIAC, 0);
+	IXGBE_WRITE_REG(&sc->hw, IXGBE_VTEIMC, ~0);
+	IXGBE_WRITE_FLUSH(&sc->hw);
+} /* ixv_if_disable_intr */
+
+/************************************************************************
+ * ixv_if_rx_queue_intr_enable
+ ************************************************************************/
+static int
+ixv_if_rx_queue_intr_enable(if_ctx_t ctx, uint16_t rxqid)
+{
+	struct ixgbe_softc *sc = iflib_get_softc(ctx);
+	struct ix_rx_queue *que = &sc->rx_queues[rxqid];
+
+	ixv_enable_queue(sc, que->rxr.me);
+
+	return (0);
+} /* ixv_if_rx_queue_intr_enable */
+
+/************************************************************************
+ * ixv_set_ivar
+ *
+ *   Setup the correct IVAR register for a particular MSI-X interrupt
+ *    - entry is the register array entry
+ *    - vector is the MSI-X vector for this queue
+ *    - type is RX/TX/MISC
+ ************************************************************************/
+static void
+ixv_set_ivar(struct ixgbe_softc *sc, u8 entry, u8 vector, s8 type)
+{
+	struct ixgbe_hw *hw = &sc->hw;
+	u32 ivar, index;
+
+	vector |= IXGBE_IVAR_ALLOC_VAL;
+
+	if (type == -1) { /* MISC IVAR */
+		ivar = IXGBE_READ_REG(hw, IXGBE_VTIVAR_MISC);
+		ivar &= ~0xFF;
+		ivar |= vector;
+		IXGBE_WRITE_REG(hw, IXGBE_VTIVAR_MISC, ivar);
+	} else {          /* RX/TX IVARS */
+		index = (16 * (entry & 1)) + (8 * type);
+		ivar = IXGBE_READ_REG(hw, IXGBE_VTIVAR(entry >> 1));
+		ivar &= ~(0xFF << index);
+		ivar |= (vector << index);
+		IXGBE_WRITE_REG(hw, IXGBE_VTIVAR(entry >> 1), ivar);
+	}
+} /* ixv_set_ivar */
+
+/************************************************************************
+ * ixv_configure_ivars
+ ************************************************************************/
+static void
+ixv_configure_ivars(struct ixgbe_softc *sc)
+{
+	struct ix_rx_queue *que = sc->rx_queues;
+
+	MPASS(sc->num_rx_queues == sc->num_tx_queues);
+
+	for (int i = 0; i < sc->num_rx_queues; i++, que++) {
+		/* First the RX queue entry */
+		ixv_set_ivar(sc, i, que->msix, 0);
+		/* ... and the TX */
+		ixv_set_ivar(sc, i, que->msix, 1);
+		/* Set an initial value in EITR */
+		IXGBE_WRITE_REG(&sc->hw, IXGBE_VTEITR(que->msix),
+		    IXGBE_EITR_DEFAULT);
+	}
+
+	/* For the mailbox interrupt */
+	ixv_set_ivar(sc, 1, sc->vector, -1);
+} /* ixv_configure_ivars */
+
+/************************************************************************
+ * ixv_init_stats
+ ************************************************************************/
+#define IXV_STAT_36_MASK	0xFFFFFFFFFULL
+
+static void
+ixv_init_stats(struct ixgbe_softc *sc)
+{
+	struct ixgbe_hw *hw = &sc->hw;
+
+	sc->stats.vf.last_vfgprc = IXGBE_READ_REG(hw, IXGBE_VFGPRC);
+	sc->stats.vf.last_vfgorc = IXGBE_READ_REG(hw, IXGBE_VFGORC_LSB);
+	sc->stats.vf.last_vfgorc |=
+	    (((u64)(IXGBE_READ_REG(hw, IXGBE_VFGORC_MSB))) << 32);
+	sc->stats.vf.last_vfgorc &= IXV_STAT_36_MASK;
+
+	sc->stats.vf.last_vfgptc = IXGBE_READ_REG(hw, IXGBE_VFGPTC);
+	sc->stats.vf.last_vfgotc = IXGBE_READ_REG(hw, IXGBE_VFGOTC_LSB);
+	sc->stats.vf.last_vfgotc |=
+	    (((u64)(IXGBE_READ_REG(hw, IXGBE_VFGOTC_MSB))) << 32);
+	sc->stats.vf.last_vfgotc &= IXV_STAT_36_MASK;
+
+	sc->stats.vf.last_vfmprc = IXGBE_READ_REG(hw, IXGBE_VFMPRC);
+	sc->stats.vf.initialized = true;
+} /* ixv_init_stats */
+
+#define UPDATE_STAT_32(reg, last, count) do {                         \
+	u32 current = IXGBE_READ_REG(hw, reg);                         \
+	count += (u32)(current - (u32)last);                            \
+	last = current;                                                 \
+} while (0)
+
+#define UPDATE_STAT_36(lsb, msb, last, count) do {                    \
+	u64 current = IXGBE_READ_REG(hw, lsb);                         \
+	current |= (u64)IXGBE_READ_REG(hw, msb) << 32;                 \
+	current &= IXV_STAT_36_MASK;                                   \
+	count += (current - last) & IXV_STAT_36_MASK;                  \
+	last = current;                                                 \
+} while (0)
+
+/************************************************************************
+ * ixv_update_stats - Update the board statistics counters.
+ ************************************************************************/
+void
+ixv_update_stats(struct ixgbe_softc *sc)
+{
+	struct ixgbe_hw *hw = &sc->hw;
+	struct ixgbevf_hw_stats *stats = &sc->stats.vf;
+
+	if (!stats->initialized)
+		return;
+
+	UPDATE_STAT_32(IXGBE_VFGPRC, sc->stats.vf.last_vfgprc,
+	    sc->stats.vf.vfgprc);
+	UPDATE_STAT_32(IXGBE_VFGPTC, sc->stats.vf.last_vfgptc,
+	    sc->stats.vf.vfgptc);
+	UPDATE_STAT_36(IXGBE_VFGORC_LSB, IXGBE_VFGORC_MSB,
+	    sc->stats.vf.last_vfgorc, sc->stats.vf.vfgorc);
+	UPDATE_STAT_36(IXGBE_VFGOTC_LSB, IXGBE_VFGOTC_MSB,
+	    sc->stats.vf.last_vfgotc, sc->stats.vf.vfgotc);
+	UPDATE_STAT_32(IXGBE_VFMPRC, sc->stats.vf.last_vfmprc,
+	    sc->stats.vf.vfmprc);
+
+	/* Fill out the OS statistics structure */
+	IXGBE_SET_IPACKETS(sc, stats->vfgprc);
+	IXGBE_SET_OPACKETS(sc, stats->vfgptc);
+	IXGBE_SET_IBYTES(sc, stats->vfgorc);
+	IXGBE_SET_OBYTES(sc, stats->vfgotc);
+	IXGBE_SET_IMCASTS(sc, stats->vfmprc);
+} /* ixv_update_stats */
+
+/************************************************************************
+ * ixv_add_stats_sysctls - Add statistic sysctls for the VF.
+ ************************************************************************/
+static void
+ixv_add_stats_sysctls(struct ixgbe_softc *sc)
+{
+	device_t dev = sc->dev;
+	struct ix_tx_queue *tx_que = sc->tx_queues;
+	struct ix_rx_queue *rx_que = sc->rx_queues;
+	struct sysctl_ctx_list *ctx = device_get_sysctl_ctx(dev);
+	struct sysctl_oid *tree = device_get_sysctl_tree(dev);
+	struct sysctl_oid_list *child = SYSCTL_CHILDREN(tree);
+	struct ixgbevf_hw_stats *stats = &sc->stats.vf;
+	struct sysctl_oid *stat_node, *queue_node;
+	struct sysctl_oid_list *stat_list, *queue_list;
+
+#define QUEUE_NAME_LEN 32
+	char namebuf[QUEUE_NAME_LEN];
+
+	/* Driver Statistics */
+	SYSCTL_ADD_ULONG(ctx, child, OID_AUTO, "link_irq",
+	    CTLFLAG_RD, &sc->link_irq, "Link MSI-X IRQ Handled");
+
+	for (int i = 0; i < sc->num_tx_queues; i++, tx_que++) {
+		struct tx_ring *txr = &tx_que->txr;
+		snprintf(namebuf, QUEUE_NAME_LEN, "queue%d", i);
+		queue_node = SYSCTL_ADD_NODE(ctx, child, OID_AUTO, namebuf,
+		    CTLFLAG_RD | CTLFLAG_MPSAFE, NULL, "Queue Name");
+		queue_list = SYSCTL_CHILDREN(queue_node);
+
+		SYSCTL_ADD_UQUAD(ctx, queue_list, OID_AUTO, "tso_tx",
+		    CTLFLAG_RD, &(txr->tso_tx), "TSO Packets");
+		SYSCTL_ADD_UQUAD(ctx, queue_list, OID_AUTO, "tx_packets",
+		    CTLFLAG_RD, &(txr->total_packets), "TX Packets");
+	}
+
+	for (int i = 0; i < sc->num_rx_queues; i++, rx_que++) {
+		struct rx_ring *rxr = &rx_que->rxr;
+		snprintf(namebuf, QUEUE_NAME_LEN, "queue%d", i);
+		queue_node = SYSCTL_ADD_NODE(ctx, child, OID_AUTO, namebuf,
+		    CTLFLAG_RD | CTLFLAG_MPSAFE, NULL, "Queue Name");
+		queue_list = SYSCTL_CHILDREN(queue_node);
+
+		SYSCTL_ADD_UQUAD(ctx, queue_list, OID_AUTO, "irqs",
+		    CTLFLAG_RD, &(rx_que->irqs), "IRQs on queue");
+		SYSCTL_ADD_UQUAD(ctx, queue_list, OID_AUTO, "rx_packets",
+		    CTLFLAG_RD, &(rxr->rx_packets), "RX packets");
+		SYSCTL_ADD_UQUAD(ctx, queue_list, OID_AUTO, "rx_bytes",
+		    CTLFLAG_RD, &(rxr->rx_bytes), "RX bytes");
+		SYSCTL_ADD_UQUAD(ctx, queue_list, OID_AUTO, "rx_discarded",
+		    CTLFLAG_RD, &(rxr->rx_discarded), "Discarded RX packets");
+	}
+
+	stat_node = SYSCTL_ADD_NODE(ctx, child, OID_AUTO, "mac",
+	    CTLFLAG_RD | CTLFLAG_MPSAFE, NULL,
+	    "VF Statistics (read from HW registers)");
+	stat_list = SYSCTL_CHILDREN(stat_node);
+
+	SYSCTL_ADD_UQUAD(ctx, stat_list, OID_AUTO, "good_pkts_rcvd",
+	    CTLFLAG_RD, &stats->vfgprc, "Good Packets Received");
+	SYSCTL_ADD_UQUAD(ctx, stat_list, OID_AUTO, "good_octets_rcvd",
+	    CTLFLAG_RD, &stats->vfgorc, "Good Octets Received");
+	SYSCTL_ADD_UQUAD(ctx, stat_list, OID_AUTO, "mcast_pkts_rcvd",
+	    CTLFLAG_RD, &stats->vfmprc, "Multicast Packets Received");
+	SYSCTL_ADD_UQUAD(ctx, stat_list, OID_AUTO, "good_pkts_txd",
+	    CTLFLAG_RD, &stats->vfgptc, "Good Packets Transmitted");
+	SYSCTL_ADD_UQUAD(ctx, stat_list, OID_AUTO, "good_octets_txd",
+	    CTLFLAG_RD, &stats->vfgotc, "Good Octets Transmitted");
+} /* ixv_add_stats_sysctls */
+
+/************************************************************************
+ * ixv_print_debug_info
+ *
+ *   Called only when em_display_debug_stats is enabled.
+ *   Provides a way to take a look at important statistics
+ *   maintained by the driver and hardware.
+ ************************************************************************/
+static void
+ixv_print_debug_info(struct ixgbe_softc *sc)
+{
+	device_t dev = sc->dev;
+	struct ixgbe_hw *hw = &sc->hw;
+
+	device_printf(dev, "Error Byte Count = %u \n",
+	    IXGBE_READ_REG(hw, IXGBE_ERRBC));
+
+	device_printf(dev, "MBX IRQ Handled: %lu\n", (long)sc->link_irq);
+} /* ixv_print_debug_info */
+
+/************************************************************************
+ * ixv_sysctl_debug
+ ************************************************************************/
+static int
+ixv_sysctl_debug(SYSCTL_HANDLER_ARGS)
+{
+	struct ixgbe_softc *sc;
+	int error, result;
+
+	result = -1;
+	error = sysctl_handle_int(oidp, &result, 0, req);
+
+	if (error || !req->newptr)
+		return (error);
+
+	if (result == 1) {
+		sc = (struct ixgbe_softc *)arg1;
+		ixv_print_debug_info(sc);
+	}
+
+	return error;
+} /* ixv_sysctl_debug */
+
+/************************************************************************
+ * ixv_init_device_features
+ ************************************************************************/
+static void
+ixv_init_device_features(struct ixgbe_softc *sc)
+{
+	sc->feat_cap = IXGBE_FEATURE_NETMAP |
+	    IXGBE_FEATURE_VF |
+	    IXGBE_FEATURE_LEGACY_TX;
+
+	/* A tad short on feature flags for VFs, atm. */
+	switch (sc->hw.mac.type) {
+	case ixgbe_mac_82599_vf:
+		break;
+	case ixgbe_mac_X540_vf:
+		break;
+	case ixgbe_mac_X550_vf:
+	case ixgbe_mac_X550EM_x_vf:
+	case ixgbe_mac_X550EM_a_vf:
+	case ixgbe_mac_E610_vf:
+		sc->feat_cap |= IXGBE_FEATURE_NEEDS_CTXD;
+		sc->feat_cap |= IXGBE_FEATURE_RSS;
+		break;
+	default:
+		break;
+	}
+
+	/* Enabled by default... */
+	/* Is a virtual function (VF) */
+	if (sc->feat_cap & IXGBE_FEATURE_VF)
+		sc->feat_en |= IXGBE_FEATURE_VF;
+	/* Netmap */
+	if (sc->feat_cap & IXGBE_FEATURE_NETMAP)
+		sc->feat_en |= IXGBE_FEATURE_NETMAP;
+	/* Receive-Side Scaling (RSS) */
+	if (sc->feat_cap & IXGBE_FEATURE_RSS)
+		sc->feat_en |= IXGBE_FEATURE_RSS;
+	/* Needs advanced context descriptor regardless of offloads req'd */
+	if (sc->feat_cap & IXGBE_FEATURE_NEEDS_CTXD)
+		sc->feat_en |= IXGBE_FEATURE_NEEDS_CTXD;
+} /* ixv_init_device_features */

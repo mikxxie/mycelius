@@ -1,0 +1,68 @@
+# SPDX-License-Identifier: CDDL-1.0
+#
+# This file and its contents are supplied under the terms of the
+# Common Development and Distribution License ("CDDL"), version 1.0.
+# You may only use this file in accordance with the terms of version
+# 1.0 of the CDDL.
+#
+# A full copy of the text of the CDDL should have accompanied this
+# source.  A copy of the CDDL is also available via the Internet at
+# https://opensource.org/license/CDDL-1.0.
+#
+
+#
+# Copyright 2007 Sun Microsystems, Inc.  All rights reserved.
+# Use is subject to license terms.
+#
+
+#
+# Copyright (c) 2012, 2016 by Delphix. All rights reserved.
+#
+
+. $STF_SUITE/tests/functional/cli_root/zfs_unmount/zfs_unmount.cfg
+
+function do_unmount #cmd #opt #mnt #expect
+{
+	typeset cmd=$1
+	typeset opt=$2
+	typeset mnt=$3
+	typeset -i expect=${4-0}
+	typeset -i ret
+	typeset -i wasmounted=1
+
+	mounted $mnt || wasmounted=0
+
+	if (( expect == 0 )) ; then
+		log_must zfs $cmd $opt $mnt
+
+		log_must unmounted $mnt
+
+		log_note "Successfully zfs $cmd $opt $mnt"
+
+	else
+		log_note "zfs $cmd $opt $mnt"
+
+		zfs $cmd $opt $mnt
+		ret=$?
+		if (( ret != expect )); then
+			log_fail "'zfs $cmd $opt $mnt' " \
+				"unexpected return code of $ret."
+		fi
+
+		if (( wasmounted == 1 )) ; then
+			log_must mounted $mnt
+		else
+			log_must unmounted $mnt
+		fi
+		log_note "Mount status of $mnt not changed."
+	fi
+}
+
+function cleanup
+{
+	[[ -n $cwd ]] && cd $cwd
+
+	log_must zfs set mountpoint=$TESTDIR $TESTPOOL/$TESTFS
+	mounted $TESTPOOL/$TESTFS || \
+		log_must zfs $mountcmd $TESTPOOL/$TESTFS
+}

@@ -1,0 +1,37 @@
+#!/bin/ksh -p
+# SPDX-License-Identifier: CDDL-1.0
+#
+# This file and its contents are supplied under the terms of the
+# Common Development and Distribution License ("CDDL"), version 1.0.
+# You may only use this file in accordance with the terms of version
+# 1.0 of the CDDL.
+#
+# A full copy of the text of the CDDL should have accompanied this
+# source.  A copy of the CDDL is also available via the Internet at
+# https://opensource.org/license/CDDL-1.0.
+#
+
+#
+# Copyright 2007 Sun Microsystems, Inc.  All rights reserved.
+# Use is subject to license terms.
+#
+
+. $STF_SUITE/include/libtest.shlib
+. $STF_SUITE/tests/functional/cachefile/cachefile.cfg
+. $STF_SUITE/tests/functional/cachefile/cachefile.kshlib
+
+for pool in "$TESTPOOL" "$TESTPOOL2" "$TESTPOOL3" ; do
+	if poolexists $pool ; then
+		destroy_pool $pool
+	fi
+done
+
+for file in $CPATH1 $CPATH2 ; do
+	if [[ -f $file ]] ; then
+		log_must rm $file
+	fi
+done
+
+if pool_in_cache $TESTPOOL; then
+	log_unsupported "Skipping test group due to existing pool"
+fi
