@@ -38,39 +38,17 @@ jobs:
           CC="ccache cc" make -C usr.sbin/backboardd
           CC="ccache cc" make -C usr.sbin/launchpad
 
-      - name: Fetch FreeBSD 15 aarch64 base sysroot (headers/libs)
-        run: |
-          SYSROOT=/tmp/freebsd-sysroot
-          mkdir -p $SYSROOT
-          # Try FreeBSD 15.0-RELEASE aarch64 base tarball.
-          for url in \
-            "https://download.freebsd.org/ftp/releases/arm64/aarch64/15.0-RELEASE/base.txz" \
-            "https://download.freebsd.org/ftp/releases/arm64/aarch64/15.0-CURRENT/base.txz" \
-            "https://download.freebsd.org/ftp/releases/arm64/aarch64/14.2-RELEASE/base.txz"; do
-            echo "Trying $url ..."
-            if wget -q -O /tmp/base.txz "$url"; then
-              echo "Downloaded $url"
-              tar -xJf /tmp/base.txz -C $SYSROOT ./usr/include ./usr/lib 2>/dev/null || \
-              tar -xf /tmp/base.txz -C $SYSROOT ./usr/include ./usr/lib 2>/dev/null || true
-              rm -f /tmp/base.txz
-              if [ -d "$SYSROOT/usr/include" ]; then break; fi
-            fi
-          done
-          ls $SYSROOT/usr/include | head
-          echo "SYSROOT=$SYSROOT" >> $GITHUB_ENV
-
       - name: Cross-compile for aarch64-unknown-freebsd (clang-18/lld-18)
         env:
-          SYSROOT: /tmp/freebsd-sysroot
+          # Vendored FreeBSD-compatible sysroot headers (repo-local, no network).
+          SYSROOT: ${{ github.workspace }}/sysroot
         run: |
-          CFLAGS="-target aarch64-unknown-freebsd --sysroot=$SYSROOT \
-                  -I$SYSROOT/usr/include -I../include \
-                  -O2 -Wall -Wextra -std=c11"
           echo "=== backboardd ==="
-          clang-18 $CFLAGS -c usr.sbin/backboardd/backboardd.c -o /tmp/bb.aarch64.o
-          clang-18 $CFLAGS -c usr.sbin/launchpad/launchpad.c -o /tmp/lp.aarch64.o
-          clang-18 $CFLAGS -c usr.sbin/launchpad/render.c -o /tmp/render.aarch64.o
-          file /tmp/bb.aarch64.o /tmp/lp.aarch64.o /tmp/render.aarch64.o | grep -q aarch64
+          make -C usr.sbin/backboardd clean >/dev/null
+          make -C usr.sbin/backboardd cross CC=clang-18 SYSROOT="$SYSROOT"
+          echo "=== launchpad ==="
+          make -C usr.sbin/launchpad clean >/dev/null
+          make -C usr.sbin/launchpad cross CC=clang-18 SYSROOT="$SYSROOT"
           echo "cross-compile OK"
 
       - name: Smoke test (backboardd synth -> launchpad render -> PPM frame)
