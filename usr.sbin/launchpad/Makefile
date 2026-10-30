@@ -22,10 +22,17 @@ $(PROG): $(SRCS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
 # Cross-build for aarch64-unknown-freebsd (clang-18/lld-18).
-#   make cross CC=clang-18
+#   SYSROOT=/path/to/freebsd make cross CC=clang-18
+# Compiles to object files only (linking needs full FreeBSD libs).
 cross: CC = clang-18
-cross: CFLAGS += -target aarch64-unknown-freebsd
-cross: $(PROG)
+cross: CFLAGS += -target aarch64-unknown-freebsd --sysroot=$(SYSROOT) \
+                 -I$(SYSROOT)/usr/include -I../include
+cross:
+	@if [ -z "$(SYSROOT)" ]; then echo "SYSROOT required"; exit 1; fi
+	for src in $(SRCS); do \
+	  $(CC) $(CFLAGS) -c $$src -o /tmp/$$(basename $$src .c).aarch64.o; \
+	done
+	file /tmp/*.aarch64.o | grep -q aarch64
 
 clean:
 	rm -f $(PROG)
