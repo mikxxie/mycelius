@@ -13,15 +13,15 @@ concurrency:
 jobs:
   build-test:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Checkout mycelius
         uses: actions/checkout@v4
 
-      - name: Install toolchain (clang-18 / lld-18) + ccache
+      - name: Install toolchain (clang-18 / lld-18) + ccache + git
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq clang-18 lld-18 ccache wget xz-utils
+          sudo apt-get install -y -qq clang-18 lld-18 ccache git
 
       - name: Cache ccache
         uses: actions/cache@v4
@@ -38,17 +38,33 @@ jobs:
           CC="ccache cc" make -C usr.sbin/backboardd
           CC="ccache cc" make -C usr.sbin/launchpad
 
+      - name: Clone FreeBSD src (--depth=1) for real aarch64 headers/libs
+        run: |
+          git clone --depth=1 https://github.com/freebsd/freebsd-src.git /tmp/freebsd-src
+          ls /tmp/freebsd-src/usr/include | head
+          echo "FREEBSD_SRC=/tmp/freebsd-src" >> $GITHUB_ENV
+
       - name: Cross-compile for aarch64-unknown-freebsd (clang-18/lld-18)
         env:
-          # Vendored FreeBSD-compatible sysroot headers (repo-local, no network).
-          SYSROOT: ${{ github.workspace }}/sysroot
+          FREEBSD_SRC: /tmp/freebsd-src
         run: |
+          SYSROOT="$FREEBSD_SRC/usr/include"
           echo "=== backboardd ==="
-          make -C usr.sbin/backboardd clean >/dev/null
-          make -C usr.sbin/backboardd cross CC=clang-18 SYSROOT="$SYSROOT"
+          clang-18 -target aarch64-unknown-freebsd --sysroot="$SYSROOT" \
+            -I"$SYSROOT" -I../include \
+            -O2 -Wall -Wextra -std=c11 \
+            -c usr.sbin/backboardd/backboardd.c -o /tmp/backboardd.aarch64.o
+          file /tmp/backboardd.aarch64.o | grep -q aarch64
           echo "=== launchpad ==="
-          make -C usr.sbin/launchpad clean >/dev/null
-          make -C usr.sbin/launchpad cross CC=clang-18 SYSROOT="$SYSROOT"
+          clang-18 -target aarch64-unknown-freebsd --sysroot="$SYSROOT" \
+            -I"$SYSROOT" -I../include \
+            -O2 -Wall -Wextra -std=c11 \
+            -c usr.sbin/launchpad/launchpad.c -o /tmp/launchpad.aarch64.o
+          clang-18 -target aarch64-unknown-freebsd --sysroot="$SYSROOT" \
+            -I"$SYSROOT" -I../include \
+            -O2 -Wall -Wextra -std=c11 \
+            -c usr.sbin/launchpad/render.c -o /tmp/render.aarch64.o
+          file /tmp/launchpad.aarch64.o /tmp/render.aarch64.o | grep -q aarch64
           echo "cross-compile OK"
 
       - name: Smoke test (backboardd synth -> launchpad render -> PPM frame)
