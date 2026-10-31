@@ -38,6 +38,10 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-freebsd-
 
+      - name: Create objdir
+        run: |
+          mkdir -p /tmp/obj
+
       - name: Cross-build FreeBSD world (arm64)
         env:
           MAKEOBJDIRPREFIX: /tmp/obj
