@@ -2,7 +2,6 @@
 
 SUBDIR=	adduser \
 	arp \
-	backboardd \
 	binmiscctl \
 	boottrace \
 	bsdconfig \
@@ -38,7 +37,6 @@ SUBDIR=	adduser \
 	iostat \
 	iovctl \
 	kldxref \
-	launchpad \
 	mailwrapper \
 	makefs \
 	memcontrol \
