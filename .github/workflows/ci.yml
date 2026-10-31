@@ -41,7 +41,7 @@ jobs:
       - name: Create objdir
         run: mkdir -p /tmp/obj
 
-      - name: Cross-build FreeBSD world (arm64)
+      - name: Cross-build FreeBSD world (arm64) - compiles ENTIRE OS
         env:
           MAKEOBJDIRPREFIX: /tmp/obj
           TARGET: arm64
@@ -76,7 +76,14 @@ jobs:
             KERNCONF=GENERIC \
             TARGET=arm64 TARGET_ARCH=aarch64
 
-      - name: Install world + kernel to staging (-DNO_ROOT)
+      - name: Build backboardd + launchpad (GNU make, ccache)
+        env:
+          CC: ccache cc
+        run: |
+          CC="ccache cc" make -C usr.sbin/backboardd
+          CC="ccache cc" make -C usr.sbin/launchpad
+
+      - name: Install world + kernel + our daemons to staging (-DNO_ROOT)
         env:
           MAKEOBJDIRPREFIX: /tmp/obj
           TARGET: arm64
@@ -95,12 +102,19 @@ jobs:
             -DNO_ROOT \
             DESTDIR=/tmp/staging \
             TARGET=arm64 TARGET_ARCH=aarch64
+          # Install our custom daemons into staging sbin
+          mkdir -p /tmp/staging/sbin
+          install -m 0755 usr.sbin/backboardd/backboardd /tmp/staging/sbin/backboardd
+          install -m 0755 usr.sbin/launchpad/launchpad /tmp/staging/sbin/launchpad
+          echo "backboardd + launchpad installed to staging: OK"
 
-      - name: Verify backboardd + launchpad built in staging
+      - name: Verify staging contents
         run: |
-          test -f /tmp/staging/sbin/backboardd || test -f /tmp/staging/usr/sbin/backboardd
-          test -f /tmp/staging/sbin/launchpad || test -f /tmp/staging/usr/sbin/launchpad
-          echo "backboardd + launchpad in staging: OK"
+          test -f /tmp/staging/sbin/backboardd
+          test -f /tmp/staging/sbin/launchpad
+          test -f /tmp/staging/boot/loader.efi
+          test -f /tmp/staging/boot/kernel/kernel
+          echo "staging verified: OK"
 
       - name: Assemble UEFI boot disk image
         env:
@@ -118,14 +132,13 @@ jobs:
           mkfs.fat -F 32 /tmp/esp.fat
           mmd -i /tmp/esp.fat ::EFI
           mmd -i /tmp/esp.fat ::EFI/BOOT
-          # Copy loader.efi + kernel from staging
+          # Copy real loader.efi + kernel from FreeBSD build
           mcopy -i /tmp/esp.fat $STAGING/boot/loader.efi ::EFI/BOOT/BOOTAA64.EFI
           mcopy -i /tmp/esp.fat $STAGING/boot/kernel/kernel ::kernel
-          # Copy backboardd + launchpad to ESP
-          mcopy -i /tmp/esp.fat $STAGING/sbin/backboardd ::mycelius/ 2>/dev/null || \
-          mcopy -i /tmp/esp.fat $STAGING/usr/sbin/backboardd ::mycelius/
-          mcopy -i /tmp/esp.fat $STAGING/sbin/launchpad ::mycelius/ 2>/dev/null || \
-          mcopy -i /tmp/esp.fat $STAGING/usr/sbin/launchpad ::mycelius/
+          # Copy our custom daemons to ESP
+          mmd -i /tmp/esp.fat ::mycelius
+          mcopy -i /tmp/esp.fat $STAGING/sbin/backboardd ::mycelius/
+          mcopy -i /tmp/esp.fat $STAGING/sbin/launchpad ::mycelius/
           dd if=/tmp/esp.fat of=$IMG bs=512 seek=$ESP_START conv=notrunc
           echo "Image created: $IMG"
           ls -lh $IMG
