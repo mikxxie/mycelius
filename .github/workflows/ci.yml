@@ -46,17 +46,17 @@ jobs:
         run: |
           echo "=== backboardd ==="
           clang-18 -target aarch64-unknown-freebsd --sysroot="$SYSROOT" \
-            -I"$SYSROOT/usr/include" -I../include \
+            -I"$SYSROOT/usr/include" -Iusr.sbin/include \
             -O2 -Wall -Wextra -std=c11 \
             -c usr.sbin/backboardd/backboardd.c -o /tmp/backboardd.aarch64.o
           file /tmp/backboardd.aarch64.o | grep -q aarch64
           echo "=== launchpad ==="
           clang-18 -target aarch64-unknown-freebsd --sysroot="$SYSROOT" \
-            -I"$SYSROOT/usr/include" -I../include \
+            -I"$SYSROOT/usr/include" -Iusr.sbin/include \
             -O2 -Wall -Wextra -std=c11 \
             -c usr.sbin/launchpad/launchpad.c -o /tmp/launchpad.aarch64.o
           clang-18 -target aarch64-unknown-freebsd --sysroot="$SYSROOT" \
-            -I"$SYSROOT/usr/include" -I../include \
+            -I"$SYSROOT/usr/include" -Iusr.sbin/include \
             -O2 -Wall -Wextra -std=c11 \
             -c usr.sbin/launchpad/render.c -o /tmp/render.aarch64.o
           file /tmp/launchpad.aarch64.o /tmp/render.aarch64.o | grep -q aarch64
