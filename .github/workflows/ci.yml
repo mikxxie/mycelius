@@ -41,18 +41,20 @@ jobs:
       - name: Create objdir
         run: mkdir -p /tmp/obj
 
-      - name: Cross-build FreeBSD world (arm64) - compiles ENTIRE OS
+      - name: Cross-build FreeBSD world (arm64) - uses prebuilt clang-18 toolchain
         env:
           MAKEOBJDIRPREFIX: /tmp/obj
           TARGET: arm64
           TARGET_ARCH: aarch64
-          CC: clang-18
-          CXX: clang++-18
-          CPP: clang-cpp-18
-          XCC: clang-18
-          XCXX: clang++-18
-          XCPP: clang-cpp-18
-          XLD: ld.lld-18
+          CC: /usr/bin/clang-18
+          CXX: /usr/bin/clang++-18
+          CPP: /usr/bin/clang-cpp-18
+          XCC: /usr/bin/clang-18
+          XCXX: /usr/bin/clang++-18
+          XCPP: /usr/bin/clang-cpp-18
+          XLD: /usr/bin/ld.lld-18
+          WITHOUT_CLANG: yes
+          WITHOUT_CLANG_EXTRAS: yes
         run: |
           python3 tools/build/make.py buildworld \
             -DWITHOUT_CLEAN \
@@ -64,13 +66,13 @@ jobs:
           MAKEOBJDIRPREFIX: /tmp/obj
           TARGET: arm64
           TARGET_ARCH: aarch64
-          CC: clang-18
-          CXX: clang++-18
-          CPP: clang-cpp-18
-          XCC: clang-18
-          XCXX: clang++-18
-          XCPP: clang-cpp-18
-          XLD: ld.lld-18
+          CC: /usr/bin/clang-18
+          CXX: /usr/bin/clang++-18
+          CPP: /usr/bin/clang-cpp-18
+          XCC: /usr/bin/clang-18
+          XCXX: /usr/bin/clang++-18
+          XCPP: /usr/bin/clang-cpp-18
+          XLD: /usr/bin/ld.lld-18
         run: |
           python3 tools/build/make.py buildkernel \
             KERNCONF=GENERIC \
@@ -89,13 +91,13 @@ jobs:
           TARGET: arm64
           TARGET_ARCH: aarch64
           DESTDIR: /tmp/staging
-          CC: clang-18
-          CXX: clang++-18
-          CPP: clang-cpp-18
-          XCC: clang-18
-          XCXX: clang++-18
-          XCPP: clang-cpp-18
-          XLD: ld.lld-18
+          CC: /usr/bin/clang-18
+          CXX: /usr/bin/clang++-18
+          CPP: /usr/bin/clang-cpp-18
+          XCC: /usr/bin/clang-18
+          XCXX: /usr/bin/clang++-18
+          XCPP: /usr/bin/clang-cpp-18
+          XLD: /usr/bin/ld.lld-18
         run: |
           mkdir -p /tmp/staging
           python3 tools/build/make.py installworld installkernel \
