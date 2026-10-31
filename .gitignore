@@ -1,5 +1,0 @@
-# Build artifacts
-usr.sbin/backboardd/backboardd
-usr.sbin/launchpad/launchpad
-*.o
-*.ppm

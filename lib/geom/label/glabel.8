@@ -1,0 +1,341 @@
+.\"
+.\" SPDX-License-Identifier: BSD-2-Clause
+.\"
+.\" Copyright (c) 2004-2005 Pawel Jakub Dawidek <pjd@FreeBSD.org>
+.\" All rights reserved.
+.\"
+.\" Redistribution and use in source and binary forms, with or without
+.\" modification, are permitted provided that the following conditions
+.\" are met:
+.\" 1. Redistributions of source code must retain the above copyright
+.\"    notice, this list of conditions and the following disclaimer.
+.\" 2. Redistributions in binary form must reproduce the above copyright
+.\"    notice, this list of conditions and the following disclaimer in the
+.\"    documentation and/or other materials provided with the distribution.
+.\"
+.\" THIS SOFTWARE IS PROVIDED BY THE AUTHORS AND CONTRIBUTORS ``AS IS'' AND
+.\" ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+.\" IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+.\" ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHORS OR CONTRIBUTORS BE LIABLE
+.\" FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+.\" DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+.\" OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+.\" HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+.\" LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+.\" OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+.\" SUCH DAMAGE.
+.\"
+.Dd September 28, 2026
+.Dt GLABEL 8
+.Os
+.Sh NAME
+.Nm glabel
+.Nd GEOM provider disk label utility
+.Sh SYNOPSIS
+.Nm
+.Cm create
+.Op Fl v
+.Ar name
+.Ar dev
+.Nm
+.Cm destroy
+.Op Fl fv
+.Ar name ...
+.Nm
+.Cm label
+.Op Fl v
+.Ar name
+.Ar dev
+.Nm
+.Cm stop
+.Op Fl fv
+.Ar name ...
+.Nm
+.Cm clear
+.Op Fl v
+.Ar dev ...
+.Nm
+.Cm dump
+.Ar dev ...
+.Nm
+.Cm refresh
+.Ar dev ...
+.Nm
+.Op Fl -libxo
+.Cm list
+.Nm
+.Op Fl -libxo
+.Cm status
+.Nm
+.Cm load
+.Nm
+.Cm unload
+.Sh DESCRIPTION
+The
+.Nm
+utility is used for GEOM provider label management.
+.Pp
+This manual page will discuss three types of labels.
+Generic GEOM labels set with
+.Nm Em label ,
+filesystem labels recognized by a specific GEOM provider, and
+device metadata identifiers (like GPT IDs or Linux Swap UUIDs).
+.Pp
+A label can be set up on a GEOM provider in two ways:
+.Dq manual
+or
+.Dq automatic .
+When using the
+.Dq manual
+method, no metadata are stored on the devices, so a label has to be configured
+by hand every time it is needed.
+The
+.Dq automatic
+method uses on-disk metadata to store the label and detect it automatically in
+the future.
+.Pp
+Note that filesystem labels (such as those for UFS or FAT)
+and GPT-based identifiers (such as GPT labels or GPT UUIDs)
+are not created by
+.Nm
+but may appear alongside GEOM labels in
+.Pa /dev .
+.Pp
+GEOM labels are set in the GEOM area of disk metadata.
+Volume labels for filesystems are set by the appropriate filesystem utility,
+often within the filesystem data.
+Device metadata identifiers are set during partitioning.
+All types of labels can be used at the same time,
+and will have appropriate entries under
+.Pa /dev .
+.Pp
+If a GEOM provider is able to read and understand the filesystem
+label or device metadata identifier, a suitable entry will be created
+as shown below:
+.Bl -column "FFS/UFS volume names" "/dev/swaplinux/" "newfs_msdosfs(8)"
+.It Em "Filesystem Type" Ta Em "Mount Path" Ta Em "Label Utility"
+.It FFS/UFS volume names Ta Pa /dev/ufs/ Ta Xr tunefs 8
+.It FFS/UFS volume IDs Ta Pa /dev/ufsid/ Ta Xr newfs 8
+.It FAT12/FAT16/FAT32 Ta Pa /dev/msdosfs/ Ta Xr newfs_msdosfs 8
+.It CD9660 Ta Pa /dev/iso9660/ Ta Xr makefs 8
+.It EXT2FS Ta Pa /dev/ext2fs/ Ta Xr e2label 8
+.It Linux Swap Ta Pa /dev/swaplinux/ Ta Xr mkswap 8
+.It GPT label Ta Pa /dev/gpt/ Ta Xr gpart 8
+.It GPT UUIDs Ta Pa /dev/gptid/ Ta Xr gpart 8
+.El
+.Pp
+Generic disk ID strings are exported as labels in the format
+.Pa /dev/diskid/GEOM_CLASS-ident
+e.g.
+.Pa /dev/diskid/DISK-6QG3Z026  .
+These disk ID labels are not created by
+.Nm ,
+but may coexist with
+.Pa /dev/label/
+labels.
+.Pp
+Generic GEOM labels are created and managed solely by
+.Nm .
+Volumes with GEOM labels are mounted in the
+.Pa /dev/label/
+directory.
+Note that generic, automatic labels occupy some space on the device and
+thus should not be added to a device already containing a filesystem.
+In particular,
+.Nm
+reserves the last sector of the device to store the label information.
+If the device already contains a filesystem,
+.Nm
+will overwrite the last sector, possibly damaging the filesystem,
+and the filesystem may later overwrite the label sector.
+Instead, create a label before initializing the filesystem,
+and initialize that filesystem on the device created by
+.Nm
+under the
+.Pa /dev/label/
+directory.
+Then the filesystem will correctly account for the space occupied by the
+generic label,
+since the
+.Nm
+device will be one sector smaller than the device from which it was created.
+.Pp
+Note that for all label types, nested GEOM classes will cause additional
+device nodes to be created, with context-specific data appended to their
+names.
+E.g. for every node like
+.Pa /dev/label/bigdisk
+there will be additional entries for any partitions which the device
+contains, like
+.Pa /dev/label/bigdiskp1
+and
+.Pa /dev/label/bigdiskp1a .
+.Pp
+.Nm
+requires write access to a device to create, modify, and destroy
+"automatic" labels.
+It will fail to persist changes if they are applied while a filesystem
+on the device is currently mounted.
+To ensure that modifications are stored across a reboot, the filesystem
+needs to be unmounted first.
+If the device holds the system's root filesystem, entering into
+single user mode and mounting in read-only mode is required to persist
+the change.
+.Pp
+The first argument to
+.Nm
+indicates an action to be performed:
+.Bl -tag -width ".Cm destroy"
+.It Cm create
+Create temporary label
+.Ar name
+for the given provider.
+This is the
+.Dq manual
+method.
+The kernel module
+.Pa geom_label.ko
+will be loaded if it is not loaded already.
+.It Cm label
+Set up a GEOM label
+.Ar name
+for the given provider.
+This is the
+.Dq automatic
+method, where metadata is stored in a provider's last sector.
+The kernel module
+.Pa geom_label.ko
+will be loaded if it is not loaded already.
+.It Cm stop
+Turn off the given label by its
+.Ar name .
+This command does not touch on-disk metadata!
+.It Cm destroy
+Same as
+.Cm stop .
+.It Cm clear
+Clear metadata on the given devices.
+.It Cm dump
+Dump metadata stored on the given devices.
+.It Cm refresh
+Refresh / rediscover metadata from the given devices.
+.It Cm list
+See
+.Xr geom 8 .
+.It Cm status
+See
+.Xr geom 8 .
+.It Cm load
+See
+.Xr geom 8 .
+.It Cm unload
+See
+.Xr geom 8 .
+.It Fl -libxo
+Generate output via
+.Xr libxo 3
+in a selection of different human and machine readable formats.
+See
+.Xr xo_options 7
+for details on command line arguments.
+.El
+.Pp
+Additional options:
+.Bl -tag -width indent
+.It Fl f
+Force the removal of the specified labels.
+.It Fl v
+Be more verbose.
+.El
+.Sh SYSCTL VARIABLES
+The following
+.Xr sysctl 8
+variables can be used to control the behavior of the
+.Nm LABEL
+GEOM class.
+The default value is shown next to each variable.
+.Bl -tag -width indent
+.It Va kern.geom.label.debug : No 0
+Debug level of the
+.Nm LABEL
+GEOM class.
+This can be set to a number between 0 and 2 inclusive.
+If set to 0 minimal debug information is printed, and if set to 2 the
+maximum amount of debug information is printed.
+.El
+.Bl -tag -width indent
+.It Va kern.geom.label.*.enable : No 1
+Most
+.Nm LABEL
+providers implement a
+.Xr sysctl 8
+flag and a tunable variable named in the above format.
+This flag controls if the label provider will be active, tasting devices
+and creating label nodes in the
+.Xr devfs 4
+tree.
+It is sometimes desirable to disable certain label types if they
+conflict with other classes in complex GEOM topologies.
+.El
+.Sh EXIT STATUS
+Exit status is 0 on success, and 1 if the command fails.
+.Sh EXAMPLES
+The following example shows how to set up a GEOM label for disk
+.Dq Li ada2 ,
+create a filesystem on it, and mount it:
+.Bd -literal -offset indent
+glabel label -v usr /dev/ada2
+newfs /dev/label/usr
+mount /dev/label/usr /usr
+[...]
+umount /usr
+glabel stop usr
+glabel unload
+.Ed
+.Pp
+To set the volume label for a UFS filesystem, use the
+.Fl L
+option with
+.Xr tunefs 8 .
+.Bd -literal -offset indent
+tunefs -L data /dev/ada4s1a
+mount /dev/ufs/data /mnt/data
+.Ed
+.Pp
+To set the volume label for a FAT filesystem, use the
+.Fl L
+option with
+.Xr newfs_msdos 8 .
+.Bd -literal -offset indent
+newfs_msdos -L MYLABEL /dev/ada0p1
+.Ed
+.Pp
+The label allows the partition to be found at
+.Pa /dev/msdosfs/MYLABEL .
+.Pp
+To set an ISO9660 volume label at filesystem creation time:
+.Bd -literal -offset indent
+makefs -t cd9660 -o volid=MYDISC
+.Ed
+.Sh SEE ALSO
+.Xr geom 4 ,
+.Xr loader.conf 5 ,
+.Xr xo_options 7 ,
+.Xr e2label 8 ,
+.Xr geom 8 ,
+.Xr gpart 8 ,
+.Xr makefs 8 ,
+.Xr mkswap 8 ,
+.Xr mount 8 ,
+.Xr newfs 8 ,
+.Xr newfs_msdos 8 ,
+.Xr sysctl 8 ,
+.Xr tunefs 8 ,
+.Xr umount 8
+.Sh HISTORY
+The
+.Nm
+utility appeared in
+.Fx 5.3 .
+.Sh AUTHORS
+.An Pawel Jakub Dawidek Aq Mt pjd@FreeBSD.org

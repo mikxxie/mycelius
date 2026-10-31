@@ -1,5 +1,0 @@
-Environment: PKG_CONFIG_SYSROOT_DIR=%TEST_FIXTURES_DIR%
-PackageSearchPath: lib1
-Query: foo
-WantVariable: prefix
-ExpectedStdout: %TEST_FIXTURES_DIR%/test

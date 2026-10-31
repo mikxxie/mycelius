@@ -1,4 +1,0 @@
-PackageSearchPath: lib1
-Query: baz
-WantedFlags: cflags static
-ExpectedStdout: -fPIC -I/test/include/foo -DFOO_STATIC

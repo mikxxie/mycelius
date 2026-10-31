@@ -18,10 +18,10 @@ jobs:
       - name: Checkout mycelius
         uses: actions/checkout@v4
 
-      - name: Install toolchain (clang-18 / lld-18) + ccache + git
+      - name: Install toolchain (clang-18 / lld-18) + ccache
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq clang-18 lld-18 ccache git
+          sudo apt-get install -y -qq clang-18 lld-18 ccache
 
       - name: Cache ccache
         uses: actions/cache@v4
@@ -38,14 +38,10 @@ jobs:
           CC="ccache cc" make -C usr.sbin/backboardd
           CC="ccache cc" make -C usr.sbin/launchpad
 
-      - name: Clone FreeBSD src (--depth=1) for real aarch64 headers/libs
-        run: |
-          git clone --depth=1 https://github.com/freebsd/freebsd-src.git /tmp/freebsd-src
-          echo "FREEBSD_SRC=/tmp/freebsd-src" >> $GITHUB_ENV
-
       - name: Cross-compile for aarch64-unknown-freebsd (clang-18/lld-18)
         env:
-          # Complete repo-local sysroot stubs for FreeBSD userland headers.
+          # Repo-local sysroot stubs cover all FreeBSD userland headers
+          # needed by backboardd + launchpad.
           SYSROOT: ${{ github.workspace }}/sysroot
         run: |
           echo "=== backboardd ==="

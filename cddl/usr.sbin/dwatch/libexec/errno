@@ -1,0 +1,47 @@
+# -*- tab-width: 4 -*- ;; Emacs
+# vi: set filetype=sh tabstop=8 shiftwidth=8 noexpandtab :: Vi/ViM
+############################################################ IDENT(1)
+#
+# $Title: dwatch(8) module for syscall errno logging $
+# $Copyright: 2014-2026 Devin Teske. All rights reserved. $
+#
+############################################################ DESCRIPTION
+#
+# Print when syscall returns with non-zero errno (default) or other condition.
+# To override the default test condition, use (for example) `-t errno==2' to
+# test for specific value or simply `-t 1' to unconditionally show all values.
+#
+# When invoked as errno-NAME, only syscalls returning that errno are shown,
+# where NAME is either a symbolic name from errno.d of libdtrace(1) or a
+# number; e.g., errno-ENOENT for failed pathname lookups, errno-EACCES or
+# errno-EPERM for permission problems, and errno-ENOTCAPABLE or
+# errno-ECAPMODE for capsicum(4) capability-mode violations. Links are
+# installed for the aforementioned; others need only a new link to this
+# module (e.g., `ln -s errno errno-EDEADLK').
+#
+############################################################ PROBE
+
+: ${PROBE:=syscall:::return}
+
+############################################################ EVENT ACTION
+
+[ "$CUSTOM_TEST" ] || case "$PROFILE" in
+errno) EVENT_TEST="errno > 0" ;;
+    *) EVENT_TEST="errno == ${PROFILE#errno-}"
+esac
+
+############################################################ EVENT DETAILS
+
+if [ ! "$CUSTOM_DETAILS" ]; then
+exec 9<<EOF
+	/*
+	 * Print errno details
+	 */
+	printf("%s: %s (%i)", probefunc, strerror[errno], errno);
+EOF
+EVENT_DETAILS=$( cat <&9 )
+fi
+
+################################################################################
+# END
+################################################################################

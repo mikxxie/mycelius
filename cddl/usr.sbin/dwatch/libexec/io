@@ -1,0 +1,171 @@
+# -*- tab-width: 4 -*- ;; Emacs
+# vi: set filetype=sh tabstop=8 shiftwidth=8 noexpandtab :: Vi/ViM
+############################################################ IDENT(1)
+#
+# $Title: dwatch(8) module for dtrace_io(4) $
+# $Copyright: 2014-2026 Devin Teske. All rights reserved. $
+#
+############################################################ DESCRIPTION
+#
+# Display activity related to disk I/O. The io-slow profile instead
+# measures per-request latency -- the time between io:::start and
+# io:::done for the same struct bio -- printing any request that meets
+# a threshold (default 100 ms; tunable via DWATCH_IO_MS in the
+# environment, 0 to show everything). Answers "is the application slow
+# because the disk is slow?" and, watched per-device, hunts I/O
+# starvation; on ZFS, watched against zvols and the pool's leaf vdevs,
+# it brackets where in the stack the time is going.
+#
+############################################################ PROBE
+
+case "$PROFILE" in
+io) : ${PROBE:=io:::start, io:::done} ;;
+io-slow) : ${PROBE:=io:::done} ;;
+ *) : ${PROBE:=io:::${PROFILE#io-}}
+esac
+
+############################################################ EVENT ACTION
+
+if [ "$PROFILE" = "io-slow" ]; then
+	: ${DWATCH_IO_MS:=100}
+
+	case "$DWATCH_IO_MS" in
+	""|*[!0-9]*) die "DWATCH_IO_MS must be a number" ;; # NOTREACHED
+	esac
+
+	[ "$CUSTOM_TEST" ] ||
+		EVENT_TEST="this->devinfo.dev_name != \"\" &&
+	this->io_ns >= (int64_t)$DWATCH_IO_MS * 1000000"
+else
+	[ "$CUSTOM_TEST" ] || EVENT_TEST='this->devinfo.dev_name != ""'
+fi
+
+############################################################ ACTIONS
+
+exec 9<<EOF
+this bufinfo_t	bufinfo;
+this devinfo_t	devinfo;
+this int	b_flags;
+this long	bio_length;
+this string	bio_cmd;
+this string	bio_flags;
+this string	device_entry;
+this string	device_if;
+this string	device_type;
+this string	flow;
+
+inline string append_bio_flag[int flags, int flag] = this->bio_flags =
+	strjoin(this->bio_flags,
+	strjoin(this->bio_flags == "" ? "" : (flags & flag) == flag ? "|" : "",
+		bio_flag_string[flags & flag]));
+
+$PROBE /(struct bio *)args[0] != NULL/ /* probe ID $ID */
+{${TRACE:+
+	printf("<$ID>");
+}
+	/*
+	 * dtrace_io(4)
+	 */
+	this->flow = probefunc == "done" ? "<-" : "->";
+
+	/*
+	 * struct bio *
+	 */
+	this->bufinfo = xlate <bufinfo_t> ((struct bio *)args[0]);
+	this->bio_cmd = bio_cmd_string[(int)this->bufinfo.b_cmd];
+	this->b_flags = (int)this->bufinfo.b_flags;
+	this->bio_flags = bio_flag_string[this->b_flags & BIO_ERROR];
+	this->bio_flags = strjoin(this->bio_flags, this->bufinfo.b_error ?
+		strjoin(this->bio_flags == "" ?
+			bio_flag_string[BIO_ERROR] : "",
+			strjoin("#", lltostr(this->bufinfo.b_error))) :
+		"");
+	append_bio_flag[this->b_flags, BIO_DONE];
+	append_bio_flag[this->b_flags, BIO_ONQUEUE];
+	append_bio_flag[this->b_flags, BIO_ORDERED];
+	append_bio_flag[this->b_flags, BIO_UNMAPPED];
+	append_bio_flag[this->b_flags, BIO_TRANSIENT_MAPPING];
+	append_bio_flag[this->b_flags, BIO_VLIST];
+	this->bio_flags = this->bio_flags == "" ? "-" : this->bio_flags;
+	this->bio_length = (long)this->bufinfo.b_bcount;
+
+	/*
+	 * struct devstat *
+	 */
+	this->devinfo = xlate <devinfo_t> ((struct devstat *)args[1]);
+	this->device_type = device_type[(int)this->devinfo.dev_type];
+	this->device_if = device_if[(int)this->devinfo.dev_type];
+	this->device_entry = strjoin(this->devinfo.dev_name,
+		lltostr(this->devinfo.dev_minor));
+}
+EOF
+ACTIONS=$( cat <&9 )
+ID=$(( $ID + 1 ))
+
+if [ "$PROFILE" = "io-slow" ]; then
+exec 9<<EOF
+$ACTIONS
+
+this int64_t	io_ns;
+int64_t		io_ts[uintptr_t];
+
+io:::start /(struct bio *)args[0] != NULL/ /* probe ID $ID */
+{${TRACE:+
+	printf("<$ID>");
+}
+	io_ts[(uintptr_t)args[0]] = timestamp;
+}
+
+$PROBE /(struct bio *)args[0] != NULL/ /* probe ID $(( $ID + 1 )) */
+{${TRACE:+
+	printf("<$(( $ID + 1 ))>");
+}
+	/* NB: -1 if we did not see the start (enabled mid-request) */
+	this->io_ns = io_ts[(uintptr_t)args[0]] ?
+		timestamp - io_ts[(uintptr_t)args[0]] : -1;
+	io_ts[(uintptr_t)args[0]] = 0;
+}
+EOF
+ACTIONS=$( cat <&9 )
+ID=$(( $ID + 2 ))
+fi
+
+############################################################ EVENT DETAILS
+
+if [ "$PROFILE" = "io-slow" ] && [ ! "$CUSTOM_DETAILS" ]; then
+exec 9<<EOF
+	/*
+	 * Print disk I/O latency details
+	 */
+	printf("%s %s %s %s %d byte%s %d.%03d ms",
+		this->device_type,
+		this->device_entry,
+		this->bio_cmd,
+		this->bio_flags,
+		this->bio_length,
+		this->bio_length == 1 ? "" : "s",
+		this->io_ns / 1000000,
+		(this->io_ns % 1000000) / 1000);
+EOF
+EVENT_DETAILS=$( cat <&9 )
+elif [ ! "$CUSTOM_DETAILS" ]; then
+exec 9<<EOF
+	/*
+	 * Print disk I/O details
+	 */
+	printf("%s %s %s %s %s %s %d byte%s",
+		this->flow,
+		this->device_type,
+		this->device_if,
+		this->device_entry,
+		this->bio_cmd,
+		this->bio_flags,
+		this->bio_length,
+		this->bio_length == 1 ? "" : "s");
+EOF
+EVENT_DETAILS=$( cat <&9 )
+fi
+
+################################################################################
+# END
+################################################################################
