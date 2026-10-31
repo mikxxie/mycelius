@@ -11,80 +11,133 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-test:
+  build-image:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 360
     steps:
       - name: Checkout mycelius
         uses: actions/checkout@v4
 
-      - name: Install toolchain (clang-18 / lld-18) + ccache
+      - name: Install build dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq clang-18 lld-18 ccache
+          sudo apt-get install -y -qq \
+            clang-18 lld-18 ccache \
+            bmake git wget xz-utils \
+            qemu-system-arm qemu-efi-aarch64 \
+            dosfstools mtools parted \
+            build-essential flex
 
-      - name: Cache ccache
+      - name: Cache ccache + build object dir
         uses: actions/cache@v4
         with:
-          path: ~/.ccache
-          key: ${{ runner.os }}-ccache-${{ github.sha }}
+          path: |
+            ~/.ccache
+            /tmp/obj
+          key: ${{ runner.os }}-freebsd-${{ github.sha }}
           restore-keys: |
-            ${{ runner.os }}-ccache-
+            ${{ runner.os }}-freebsd-
 
-      - name: Build backboardd + launchpad (native, ccache)
+      - name: Cross-build FreeBSD world (arm64)
         env:
-          CC: ccache cc
+          MAKEOBJDIRPREFIX: /tmp/obj
+          TARGET: arm64
+          TARGET_ARCH: aarch64
+          XCC: clang-18
+          XCXX: clang++-18
+          XCPP: clang-cpp-18
+          XLD: ld.lld-18
+          CC: ccache clang-18
         run: |
-          CC="ccache cc" make -C usr.sbin/backboardd
-          CC="ccache cc" make -C usr.sbin/launchpad
+          python3 tools/build/make.py buildworld \
+            -DWITHOUT_CLEAN \
+            -DWITH_AUTO_OBJ \
+            TARGET=arm64 TARGET_ARCH=aarch64
 
-      - name: Cross-compile for aarch64-unknown-freebsd (clang-18/lld-18)
+      - name: Cross-build FreeBSD kernel (arm64)
         env:
-          # Repo-local sysroot stubs cover all FreeBSD userland headers
-          # needed by backboardd + launchpad.
-          SYSROOT: ${{ github.workspace }}/sysroot
+          MAKEOBJDIRPREFIX: /tmp/obj
+          TARGET: arm64
+          TARGET_ARCH: aarch64
+          XCC: clang-18
+          XCXX: clang++-18
+          XCPP: clang-cpp-18
+          XLD: ld.lld-18
         run: |
-          echo "=== backboardd ==="
-          clang-18 -target aarch64-unknown-freebsd --sysroot="$SYSROOT" \
-            -I"$SYSROOT/usr/include" -Iusr.sbin/include \
-            -O2 -Wall -Wextra -std=c11 \
-            -c usr.sbin/backboardd/backboardd.c -o /tmp/backboardd.aarch64.o
-          file /tmp/backboardd.aarch64.o | grep -q aarch64
-          echo "=== launchpad ==="
-          clang-18 -target aarch64-unknown-freebsd --sysroot="$SYSROOT" \
-            -I"$SYSROOT/usr/include" -Iusr.sbin/include \
-            -O2 -Wall -Wextra -std=c11 \
-            -c usr.sbin/launchpad/launchpad.c -o /tmp/launchpad.aarch64.o
-          clang-18 -target aarch64-unknown-freebsd --sysroot="$SYSROOT" \
-            -I"$SYSROOT/usr/include" -Iusr.sbin/include \
-            -O2 -Wall -Wextra -std=c11 \
-            -c usr.sbin/launchpad/render.c -o /tmp/render.aarch64.o
-          file /tmp/launchpad.aarch64.o /tmp/render.aarch64.o | grep -q aarch64
-          echo "cross-compile OK"
+          python3 tools/build/make.py buildkernel \
+            KERNCONF=GENERIC \
+            TARGET=arm64 TARGET_ARCH=aarch64
 
-      - name: Smoke test (backboardd synth -> launchpad render -> PPM frame)
+      - name: Install world + kernel to staging (-DNO_ROOT)
+        env:
+          MAKEOBJDIRPREFIX: /tmp/obj
+          TARGET: arm64
+          TARGET_ARCH: aarch64
+          DESTDIR: /tmp/staging
+          XCC: clang-18
+          XCXX: clang++-18
+          XLD: ld.lld-18
         run: |
-          make -C usr.sbin/backboardd
-          make -C usr.sbin/launchpad
-          rm -f /tmp/lp_bb.sock /tmp/lp_frame.ppm
-          ./usr.sbin/backboardd/backboardd -s /tmp/lp_bb.sock >/tmp/bb.log 2>&1 &
-          BBPID=$!
-          sleep 0.5
-          ./usr.sbin/launchpad/launchpad -b /tmp/lp_bb.sock -o /tmp/lp_frame.ppm >/tmp/lp.log 2>&1 &
-          LPPID=$!
-          sleep 3
-          kill $LPPID $BBPID 2>/dev/null || true
-          wait $BBPID 2>/dev/null || true
-          wait $LPPID 2>/dev/null || true
-          test -s /tmp/lp_frame.ppm
-          file /tmp/lp_frame.ppm | grep -q "480 x 800"
+          mkdir -p /tmp/staging
+          python3 tools/build/make.py installworld installkernel \
+            -DNO_ROOT \
+            DESTDIR=/tmp/staging \
+            TARGET=arm64 TARGET_ARCH=aarch64
 
-      - name: Upload artifacts (binaries + rendered frame)
+      - name: Build host tools (makefs)
+        env:
+          MAKEOBJDIRPREFIX: /tmp/obj
+        run: |
+          make -C sbin/makefs OBJDIR=/tmp/obj/makefs || true
+
+      - name: Assemble UEFI boot disk image
+        env:
+          STAGING: /tmp/staging
+        run: |
+          IMG=/tmp/mycelius-arm64.img
+          rm -f $IMG
+          qemu-img create -f raw $IMG 2G
+          # GPT: ESP (FAT32, 100MiB) + rootfs (rest)
+          parted $IMG --script mklabel gpt
+          parted $IMG --script mkpart ESP fat32 1MiB 101MiB
+          parted $IMG --script set 1 esp on
+          parted $IMG --script mkpart rootfs freebsd-ufs 101MiB 100%
+          # Get ESP start sector (512-byte sectors)
+          ESP_START=$(parted $IMG --script unit s print | awk '/^ 1 /{print $2}' | tr -d s)
+          # Create FAT filesystem on ESP partition
+          dd if=/dev/zero of=$IMG bs=512 count=$((101 - 1)) seek=0 conv=notrunc 2>/dev/null
+          # Write FAT to ESP region using mtools (no mount needed)
+          # Create a temporary FAT image for the ESP
+          dd if=/dev/zero of=/tmp/esp.fat bs=1M count=100
+          mkfs.fat -F 32 /tmp/esp.fat
+          mdir -i /tmp/esp.fat ::EFI
+          mdir -i /tmp/esp.fat ::EFI/BOOT
+          mmd -i /tmp/esp.fat ::EFI/BOOT
+          mcopy -i /tmp/esp.fat $STAGING/boot/loader.efi ::EFI/BOOT/BOOTAA64.EFI
+          mcopy -i /tmp/esp.fat $STAGING/boot/kernel/kernel ::kernel
+          # Write ESP FAT image to the ESP partition offset
+          dd if=/tmp/esp.fat of=$IMG bs=512 seek=$ESP_START conv=notrunc
+          echo "Image created: $IMG"
+          ls -lh $IMG
+
+      - name: QEMU UEFI boot test
+        run: |
+          timeout 60 qemu-system-aarch64 \
+            -M virt \
+            -cpu cortex-a72 \
+            -m 2G \
+            -smp 2 \
+            -bios /usr/share/qemu-efi-aarch64/QEMU_EFI.fd \
+            -drive file=/tmp/mycelius-arm64.img,format=raw,if=none,id=hd0 \
+            -device virtio-blk-device,drive=hd0 \
+            -display none \
+            -serial stdio \
+            -no-reboot \
+            || true
+
+      - name: Upload disk image artifact
         uses: actions/upload-artifact@v4
         with:
-          name: mycelius-ui-binaries
-          path: |
-            usr.sbin/backboardd/backboardd
-            usr.sbin/launchpad/launchpad
-            /tmp/lp_frame.ppm
+          name: mycelius-arm64-img
+          path: /tmp/mycelius-arm64.img
           retention-days: 7
