@@ -55,6 +55,7 @@ jobs:
           XLD: /usr/bin/ld.lld-18
           WITHOUT_CLANG: yes
           WITHOUT_CLANG_EXTRAS: yes
+          MK_CXX: no
         run: |
           python3 tools/build/make.py buildworld \
             -DWITHOUT_CLEAN \
@@ -73,6 +74,7 @@ jobs:
           XCXX: /usr/bin/clang++-18
           XCPP: /usr/bin/clang-cpp-18
           XLD: /usr/bin/ld.lld-18
+          MK_CXX: no
         run: |
           python3 tools/build/make.py buildkernel \
             KERNCONF=GENERIC \
@@ -98,6 +100,9 @@ jobs:
           XCXX: /usr/bin/clang++-18
           XCPP: /usr/bin/clang-cpp-18
           XLD: /usr/bin/ld.lld-18
+          WITHOUT_CLANG: yes
+          WITHOUT_CLANG_EXTRAS: yes
+          MK_CXX: no
         run: |
           mkdir -p /tmp/staging
           python3 tools/build/make.py installworld installkernel \
