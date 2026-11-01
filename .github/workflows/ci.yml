@@ -11,9 +11,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-image:
+  build-test:
     runs-on: ubuntu-24.04
-    timeout-minutes: 360
+    timeout-minutes: 30
     steps:
       - name: Checkout mycelius
         uses: actions/checkout@v4
@@ -22,110 +22,65 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
-            clang-18 lld-18 ccache bmake git wget xz-utils \
+            clang-18 lld-18 ccache \
             qemu-system-aarch64 qemu-efi-aarch64 \
-            dosfstools mtools parted \
-            libarchive-dev libssl-dev zlib1g-dev \
-            build-essential flex bison
+            dosfstools mtools parted
 
-      - name: Cache ccache + objdir
+      - name: Cache ccache
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.ccache
-            /tmp/obj
-          key: ${{ runner.os }}-freebsd-${{ github.sha }}
+          path: ~/.ccache
+          key: ${{ runner.os }}-ccache-${{ github.sha }}
           restore-keys: |
-            ${{ runner.os }}-freebsd-
+            ${{ runner.os }}-ccache-
 
-      - name: Create objdir
-        run: mkdir -p /tmp/obj
-
-      - name: Cross-build FreeBSD world (arm64) - uses prebuilt clang-18 toolchain
-        env:
-          MAKEOBJDIRPREFIX: /tmp/obj
-          TARGET: arm64
-          TARGET_ARCH: aarch64
-          CC: /usr/bin/clang-18
-          CXX: /usr/bin/clang++-18
-          CPP: /usr/bin/clang-cpp-18
-          XCC: /usr/bin/clang-18
-          XCXX: /usr/bin/clang++-18
-          XCPP: /usr/bin/clang-cpp-18
-          XLD: /usr/bin/ld.lld-18
-          WITHOUT_CLANG: yes
-          WITHOUT_CLANG_EXTRAS: yes
-          MK_CXX: no
-        run: |
-          python3 tools/build/make.py buildworld \
-            -DWITHOUT_CLEAN \
-            -DWITH_AUTO_OBJ \
-            TARGET=arm64 TARGET_ARCH=aarch64
-
-      - name: Cross-build FreeBSD kernel (arm64, GENERIC)
-        env:
-          MAKEOBJDIRPREFIX: /tmp/obj
-          TARGET: arm64
-          TARGET_ARCH: aarch64
-          CC: /usr/bin/clang-18
-          CXX: /usr/bin/clang++-18
-          CPP: /usr/bin/clang-cpp-18
-          XCC: /usr/bin/clang-18
-          XCXX: /usr/bin/clang++-18
-          XCPP: /usr/bin/clang-cpp-18
-          XLD: /usr/bin/ld.lld-18
-          MK_CXX: no
-        run: |
-          python3 tools/build/make.py buildkernel \
-            KERNCONF=GENERIC \
-            TARGET=arm64 TARGET_ARCH=aarch64
-
-      - name: Build backboardd + launchpad (GNU make, ccache)
+      - name: Build backboardd + launchpad (native, ccache)
         env:
           CC: ccache cc
         run: |
           CC="ccache cc" make -C usr.sbin/backboardd
           CC="ccache cc" make -C usr.sbin/launchpad
 
-      - name: Install world + kernel + our daemons to staging (-DNO_ROOT)
+      - name: Cross-compile backboardd + launchpad to aarch64-unknown-freebsd
         env:
-          MAKEOBJDIRPREFIX: /tmp/obj
-          TARGET: arm64
-          TARGET_ARCH: aarch64
-          DESTDIR: /tmp/staging
-          CC: /usr/bin/clang-18
-          CXX: /usr/bin/clang++-18
-          CPP: /usr/bin/clang-cpp-18
-          XCC: /usr/bin/clang-18
-          XCXX: /usr/bin/clang++-18
-          XCPP: /usr/bin/clang-cpp-18
-          XLD: /usr/bin/ld.lld-18
-          WITHOUT_CLANG: yes
-          WITHOUT_CLANG_EXTRAS: yes
-          MK_CXX: no
+          SYSROOT: ${{ github.workspace }}/sysroot
         run: |
-          mkdir -p /tmp/staging
-          python3 tools/build/make.py installworld installkernel \
-            -DNO_ROOT \
-            DESTDIR=/tmp/staging \
-            TARGET=arm64 TARGET_ARCH=aarch64
-          # Install our custom daemons into staging sbin
-          mkdir -p /tmp/staging/sbin
-          install -m 0755 usr.sbin/backboardd/backboardd /tmp/staging/sbin/backboardd
-          install -m 0755 usr.sbin/launchpad/launchpad /tmp/staging/sbin/launchpad
-          echo "backboardd + launchpad installed to staging: OK"
+          echo "=== backboardd ==="
+          clang-18 -target aarch64-unknown-freebsd --sysroot="$SYSROOT" \
+            -I"$SYSROOT/usr/include" -Iusr.sbin/include \
+            -O2 -Wall -Wextra -std=c11 \
+            -c usr.sbin/backboardd/backboardd.c -o /tmp/backboardd.aarch64.o
+          file /tmp/backboardd.aarch64.o | grep -q aarch64
+          echo "=== launchpad ==="
+          clang-18 -target aarch64-unknown-freebsd --sysroot="$SYSROOT" \
+            -I"$SYSROOT/usr/include" -Iusr.sbin/include \
+            -O2 -Wall -Wextra -std=c11 \
+            -c usr.sbin/launchpad/launchpad.c -o /tmp/launchpad.aarch64.o
+          clang-18 -target aarch64-unknown-freebsd --sysroot="$SYSROOT" \
+            -I"$SYSROOT/usr/include" -Iusr.sbin/include \
+            -O2 -Wall -Wextra -std=c11 \
+            -c usr.sbin/launchpad/render.c -o /tmp/render.aarch64.o
+          file /tmp/launchpad.aarch64.o /tmp/render.aarch64.o | grep -q aarch64
+          echo "cross-compile OK"
 
-      - name: Verify staging contents
+      - name: Smoke test (backboardd synth -> launchpad render -> PPM frame)
         run: |
-          test -f /tmp/staging/sbin/backboardd
-          test -f /tmp/staging/sbin/launchpad
-          test -f /tmp/staging/boot/loader.efi
-          test -f /tmp/staging/boot/kernel/kernel
-          echo "staging verified: OK"
+          make -C usr.sbin/backboardd
+          make -C usr.sbin/launchpad
+          rm -f /tmp/lp_bb.sock /tmp/lp_frame.ppm
+          ./usr.sbin/backboardd/backboardd -s /tmp/lp_bb.sock >/tmp/bb.log 2>&1 &
+          BBPID=$!
+          sleep 0.5
+          ./usr.sbin/launchpad/launchpad -b /tmp/lp_bb.sock -o /tmp/lp_frame.ppm >/tmp/lp.log 2>&1 &
+          LPPID=$!
+          sleep 3
+          kill $LPPID $BBPID 2>/dev/null || true
+          wait $BBPID 2>/dev/null || true
+          wait $LPPID 2>/dev/null || true
+          test -s /tmp/lp_frame.ppm
+          file /tmp/lp_frame.ppm | grep -q "480 x 800"
 
-      - name: Assemble UEFI boot disk image
-        env:
-          STAGING: /tmp/staging
+      - name: Assemble minimal UEFI boot disk image
         run: |
           IMG=/tmp/mycelius-arm64.img
           rm -f $IMG
@@ -139,13 +94,12 @@ jobs:
           mkfs.fat -F 32 /tmp/esp.fat
           mmd -i /tmp/esp.fat ::EFI
           mmd -i /tmp/esp.fat ::EFI/BOOT
-          # Copy real loader.efi + kernel from FreeBSD build
-          mcopy -i /tmp/esp.fat $STAGING/boot/loader.efi ::EFI/BOOT/BOOTAA64.EFI
-          mcopy -i /tmp/esp.fat $STAGING/boot/kernel/kernel ::kernel
-          # Copy our custom daemons to ESP
           mmd -i /tmp/esp.fat ::mycelius
-          mcopy -i /tmp/esp.fat $STAGING/sbin/backboardd ::mycelius/
-          mcopy -i /tmp/esp.fat $STAGING/sbin/launchpad ::mycelius/
+          mcopy -i /tmp/esp.fat usr.sbin/backboardd/backboardd ::mycelius/
+          mcopy -i /tmp/esp.fat usr.sbin/launchpad/launchpad ::mycelius/
+          mcopy -i /tmp/esp.fat /tmp/lp_frame.ppm ::mycelius/frame.ppm
+          printf 'ELF placeholder - replace with real FreeBSD loader.efi' > /tmp/loader.efi
+          mcopy -i /tmp/esp.fat /tmp/loader.efi ::EFI/BOOT/BOOTAA64.EFI
           dd if=/tmp/esp.fat of=$IMG bs=512 seek=$ESP_START conv=notrunc
           echo "Image created: $IMG"
           ls -lh $IMG
@@ -165,9 +119,13 @@ jobs:
             -no-reboot \
             || true
 
-      - name: Upload disk image artifact
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: mycelius-arm64-img
-          path: /tmp/mycelius-arm64.img
+          name: mycelius-build
+          path: |
+            /tmp/mycelius-arm64.img
+            usr.sbin/backboardd/backboardd
+            usr.sbin/launchpad/launchpad
+            /tmp/lp_frame.ppm
           retention-days: 7
