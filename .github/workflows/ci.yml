@@ -188,7 +188,7 @@ jobs:
           chmod 0755 /tmp/staging/etc/rc.local
 
           # Format and write UFS2 rootfs into Partition 2
-          makefs -t ffs -B little -o version=2,softupdates=1 /tmp/rootfs.ufs /tmp/staging
+          makefs -t ffs -B little -o version=2 -b 50000 /tmp/rootfs.ufs /tmp/staging
           ROOT_START=$(parted $IMG --script unit s print | awk '/^ 2 /{print $2}' | tr -d s)
           dd if=/tmp/rootfs.ufs of=$IMG bs=512 seek=$ROOT_START conv=notrunc
           echo "Bootable image created with full rootfs: $IMG"
