@@ -24,7 +24,7 @@ jobs:
           sudo apt-get install -y -qq \
             clang-18 lld-18 ccache \
             qemu-system-aarch64 qemu-efi-aarch64 \
-            dosfstools mtools parted curl xz-utils
+            dosfstools mtools parted curl xz-utils makefs
 
       - name: Cache ccache
         uses: actions/cache@v4
@@ -54,7 +54,7 @@ jobs:
           fi
           echo "Extracting kernel, loader.efi, and sysroot..."
           tar -xf /tmp/freebsd-cache/kernel.txz -C /tmp/freebsd ./boot/kernel/kernel
-          tar -xf /tmp/freebsd-cache/base.txz -C /tmp/freebsd ./boot/loader.efi ./lib ./usr/lib ./usr/include
+          tar -xf /tmp/freebsd-cache/base.txz -C /tmp/freebsd ./boot/loader.efi ./boot/lua ./lib ./usr/lib ./usr/include
           echo "FreeBSD ARM64 assets ready:"
           ls -lh /tmp/freebsd/boot/kernel/kernel /tmp/freebsd/boot/loader.efi
 
@@ -140,13 +140,58 @@ jobs:
           mcopy -i /tmp/esp.fat /tmp/freebsd/boot/kernel/kernel ::boot/kernel/kernel
           mcopy -i /tmp/esp.fat /tmp/freebsd/boot/kernel/kernel ::kernel
 
+          # Bootloader auto-boot configuration & Lua scripts
+          cat << 'EOF' > /tmp/loader.conf
+          autoboot_delay="2"
+          vfs.root.mountfrom="ufs:/dev/vtbd0p2"
+          bootfile="/boot/kernel/kernel"
+          EOF
+          mcopy -i /tmp/esp.fat /tmp/loader.conf ::boot/loader.conf
+          if [ -d /tmp/freebsd/boot/lua ]; then
+            mmd -i /tmp/esp.fat ::boot/lua
+            mcopy -s -i /tmp/esp.fat /tmp/freebsd/boot/lua/* ::boot/lua/ || true
+          fi
+
           # Mycelius custom daemons + UI frame
           mcopy -i /tmp/esp.fat /tmp/backboardd.aarch64 ::mycelius/backboardd
           mcopy -i /tmp/esp.fat /tmp/launchpad.aarch64 ::mycelius/launchpad
           mcopy -i /tmp/esp.fat /tmp/lp_frame.ppm ::mycelius/frame.ppm
 
           dd if=/tmp/esp.fat of=$IMG bs=512 seek=$ESP_START conv=notrunc
-          echo "Bootable image created: $IMG"
+
+          # Build real FreeBSD UFS2 rootfs with makefs
+          echo "Building FreeBSD UFS2 rootfs..."
+          mkdir -p /tmp/staging
+          tar -xf /tmp/freebsd-cache/base.txz -C /tmp/staging
+
+          # Copy mycelius daemons into rootfs /sbin
+          cp /tmp/backboardd.aarch64 /tmp/staging/sbin/backboardd || true
+          cp /tmp/launchpad.aarch64 /tmp/staging/sbin/launchpad || true
+          chmod 0755 /tmp/staging/sbin/backboardd /tmp/staging/sbin/launchpad || true
+
+          # Create /etc/fstab
+          cat << 'EOF' > /tmp/staging/etc/fstab
+          /dev/vtbd0p2  /  ufs  rw  1  1
+          EOF
+
+          # Create /etc/rc.local to auto-start launchpad + backboardd on boot
+          cat << 'EOF' > /tmp/staging/etc/rc.local
+          #!/bin/sh
+          echo "=========================================="
+          echo " Starting mycelius UI stack"
+          echo "=========================================="
+          /sbin/backboardd -s /var/run/lp_bb.sock > /var/log/bb.log 2>&1 &
+          sleep 1
+          /sbin/launchpad -b /var/run/lp_bb.sock -o /var/run/lp_frame.ppm > /var/log/lp.log 2>&1 &
+          echo "mycelius LaunchPad running!"
+          EOF
+          chmod 0755 /tmp/staging/etc/rc.local
+
+          # Format and write UFS2 rootfs into Partition 2
+          makefs -t ffs -B little -o version=2,softupdates=1 /tmp/rootfs.ufs /tmp/staging
+          ROOT_START=$(parted $IMG --script unit s print | awk '/^ 2 /{print $2}' | tr -d s)
+          dd if=/tmp/rootfs.ufs of=$IMG bs=512 seek=$ROOT_START conv=notrunc
+          echo "Bootable image created with full rootfs: $IMG"
           ls -lh $IMG
 
       - name: QEMU UEFI boot test
