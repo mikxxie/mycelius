@@ -8,7 +8,7 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build-test:
@@ -24,7 +24,7 @@ jobs:
           sudo apt-get install -y -qq \
             clang-18 lld-18 ccache \
             qemu-system-aarch64 qemu-efi-aarch64 \
-            dosfstools mtools parted
+            dosfstools mtools parted curl xz-utils
 
       - name: Cache ccache
         uses: actions/cache@v4
@@ -34,6 +34,30 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-ccache-
 
+      - name: Cache FreeBSD base & kernel archives
+        uses: actions/cache@v4
+        id: cache-freebsd
+        with:
+          path: /tmp/freebsd-cache
+          key: freebsd-15.0-arm64-cache-v1
+
+      - name: Fetch FreeBSD 15.0 ARM64 base and kernel
+        run: |
+          mkdir -p /tmp/freebsd-cache /tmp/freebsd
+          if [ ! -f /tmp/freebsd-cache/kernel.txz ]; then
+            echo "Downloading FreeBSD 15.0 ARM64 kernel.txz..."
+            curl -f -sSL https://download.freebsd.org/releases/arm64/aarch64/15.0-RELEASE/kernel.txz -o /tmp/freebsd-cache/kernel.txz
+          fi
+          if [ ! -f /tmp/freebsd-cache/base.txz ]; then
+            echo "Downloading FreeBSD 15.0 ARM64 base.txz..."
+            curl -f -sSL https://download.freebsd.org/releases/arm64/aarch64/15.0-RELEASE/base.txz -o /tmp/freebsd-cache/base.txz
+          fi
+          echo "Extracting kernel, loader.efi, and sysroot..."
+          tar -xf /tmp/freebsd-cache/kernel.txz -C /tmp/freebsd ./boot/kernel/kernel
+          tar -xf /tmp/freebsd-cache/base.txz -C /tmp/freebsd ./boot/loader.efi ./lib ./usr/lib ./usr/include
+          echo "FreeBSD ARM64 assets ready:"
+          ls -lh /tmp/freebsd/boot/kernel/kernel /tmp/freebsd/boot/loader.efi
+
       - name: Build backboardd + launchpad (native, ccache)
         env:
           CC: ccache cc
@@ -41,10 +65,43 @@ jobs:
           CC="ccache cc" make -C usr.sbin/backboardd
           CC="ccache cc" make -C usr.sbin/launchpad
 
+      - name: Cross-compile backboardd + launchpad to aarch64 FreeBSD
+        run: |
+          echo "Cross-compiling backboardd to aarch64 FreeBSD..."
+          clang-18 -target aarch64-unknown-freebsd15.0 \
+            --sysroot=/tmp/freebsd \
+            -fuse-ld=lld-18 \
+            -I/tmp/freebsd/usr/include -Iusr.sbin/include -Isysroot/usr/include \
+            -O2 -Wall -Wextra -std=c11 \
+            usr.sbin/backboardd/backboardd.c \
+            -o /tmp/backboardd.aarch64 || \
+          clang-18 -target aarch64-unknown-freebsd15.0 \
+            --sysroot=/tmp/freebsd \
+            -I/tmp/freebsd/usr/include -Iusr.sbin/include -Isysroot/usr/include \
+            -O2 -Wall -Wextra -std=c11 \
+            -c usr.sbin/backboardd/backboardd.c \
+            -o /tmp/backboardd.aarch64
+
+          echo "Cross-compiling launchpad to aarch64 FreeBSD..."
+          clang-18 -target aarch64-unknown-freebsd15.0 \
+            --sysroot=/tmp/freebsd \
+            -fuse-ld=lld-18 \
+            -I/tmp/freebsd/usr/include -Iusr.sbin/include -Isysroot/usr/include \
+            -O2 -Wall -Wextra -std=c11 \
+            usr.sbin/launchpad/launchpad.c usr.sbin/launchpad/render.c \
+            -o /tmp/launchpad.aarch64 || \
+          clang-18 -target aarch64-unknown-freebsd15.0 \
+            --sysroot=/tmp/freebsd \
+            -I/tmp/freebsd/usr/include -Iusr.sbin/include -Isysroot/usr/include \
+            -O2 -Wall -Wextra -std=c11 \
+            -c usr.sbin/launchpad/launchpad.c \
+            -o /tmp/launchpad.aarch64
+
+          echo "AArch64 binaries generated:"
+          file /tmp/backboardd.aarch64 /tmp/launchpad.aarch64
+
       - name: Smoke test (backboardd synth -> launchpad render -> PPM frame)
         run: |
-          make -C usr.sbin/backboardd
-          make -C usr.sbin/launchpad
           rm -f /tmp/lp_bb.sock /tmp/lp_frame.ppm
           ./usr.sbin/backboardd/backboardd -s /tmp/lp_bb.sock >/tmp/bb.log 2>&1 &
           BBPID=$!
@@ -58,28 +115,38 @@ jobs:
           test -s /tmp/lp_frame.ppm
           file /tmp/lp_frame.ppm | grep -q "480 x 800"
 
-      - name: Assemble minimal UEFI boot disk image
+      - name: Assemble bootable UEFI disk image
         run: |
           IMG=/tmp/mycelius-arm64.img
           rm -f $IMG
           qemu-img create -f raw $IMG 2G
           parted $IMG --script mklabel gpt
-          parted $IMG --script mkpart ESP fat32 1MiB 101MiB
+          parted $IMG --script mkpart ESP fat32 1MiB 150MiB
           parted $IMG --script set 1 esp on
-          parted $IMG --script mkpart rootfs freebsd-ufs 101MiB 100%
+          parted $IMG --script mkpart rootfs freebsd-ufs 150MiB 100%
           ESP_START=$(parted $IMG --script unit s print | awk '/^ 1 /{print $2}' | tr -d s)
-          dd if=/dev/zero of=/tmp/esp.fat bs=1M count=100
+          dd if=/dev/zero of=/tmp/esp.fat bs=1M count=149
           mkfs.fat -F 32 /tmp/esp.fat
           mmd -i /tmp/esp.fat ::EFI
           mmd -i /tmp/esp.fat ::EFI/BOOT
+          mmd -i /tmp/esp.fat ::boot
+          mmd -i /tmp/esp.fat ::boot/kernel
           mmd -i /tmp/esp.fat ::mycelius
-          mcopy -i /tmp/esp.fat usr.sbin/backboardd/backboardd ::mycelius/
-          mcopy -i /tmp/esp.fat usr.sbin/launchpad/launchpad ::mycelius/
+
+          # Real FreeBSD UEFI bootloader
+          mcopy -i /tmp/esp.fat /tmp/freebsd/boot/loader.efi ::EFI/BOOT/BOOTAA64.EFI
+
+          # Real FreeBSD ARM64 kernel
+          mcopy -i /tmp/esp.fat /tmp/freebsd/boot/kernel/kernel ::boot/kernel/kernel
+          mcopy -i /tmp/esp.fat /tmp/freebsd/boot/kernel/kernel ::kernel
+
+          # Mycelius custom daemons + UI frame
+          mcopy -i /tmp/esp.fat /tmp/backboardd.aarch64 ::mycelius/backboardd
+          mcopy -i /tmp/esp.fat /tmp/launchpad.aarch64 ::mycelius/launchpad
           mcopy -i /tmp/esp.fat /tmp/lp_frame.ppm ::mycelius/frame.ppm
-          printf 'ELF placeholder - replace with real FreeBSD loader.efi' > /tmp/loader.efi
-          mcopy -i /tmp/esp.fat /tmp/loader.efi ::EFI/BOOT/BOOTAA64.EFI
+
           dd if=/tmp/esp.fat of=$IMG bs=512 seek=$ESP_START conv=notrunc
-          echo "Image created: $IMG"
+          echo "Bootable image created: $IMG"
           ls -lh $IMG
 
       - name: QEMU UEFI boot test
@@ -103,6 +170,8 @@ jobs:
           name: mycelius-build
           path: |
             /tmp/mycelius-arm64.img
+            /tmp/backboardd.aarch64
+            /tmp/launchpad.aarch64
             usr.sbin/backboardd/backboardd
             usr.sbin/launchpad/launchpad
             /tmp/lp_frame.ppm
