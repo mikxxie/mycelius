@@ -14,6 +14,10 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 
+#ifndef MSG_DONTWAIT
+#define MSG_DONTWAIT 0x40
+#endif
+
 #ifdef __FreeBSD__
 #include <sys/cpuset.h>
 #include <sys/rprio.h>
