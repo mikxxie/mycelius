@@ -97,6 +97,41 @@ jobs:
           SYSROOT=/tmp/freebsd-sysroot
           INCS="-I${SYSROOT}/usr/include -Iusr.sbin/include"
 
+          # Stub out kernel-only FreeBSD headers missing from base.txz sysroot
+          SYSINC="${SYSROOT}/usr/include/sys"
+          mkdir -p "${SYSINC}"
+
+          [ -f "${SYSINC}/rprio.h" ] || cat > "${SYSINC}/rprio.h" << 'STUB'
+#ifndef _SYS_RPRIO_H_
+#define _SYS_RPRIO_H_
+#include <sys/types.h>
+#define RTP_PRIO_REALTIME 2
+#define RTP_PRIO_NORMAL   3
+#define RTP_PRIO_IDLE     4
+#define RTP_SET           1
+#define RTP_GET           0
+struct rtprio { unsigned short type; unsigned short prio; };
+int rtprio(int, pid_t, struct rtprio *);
+#endif
+STUB
+
+          [ -f "${SYSINC}/cpuset.h" ] || cat > "${SYSINC}/cpuset.h" << 'STUB'
+#ifndef _SYS_CPUSET_H_
+#define _SYS_CPUSET_H_
+#include <sys/types.h>
+#define CPU_SETSIZE 256
+typedef struct { unsigned long __bits[CPU_SETSIZE/64]; } cpuset_t;
+#define CPU_ZERO(s)      __builtin_memset((s),0,sizeof(*(s)))
+#define CPU_SET(n,s)     ((s)->__bits[(n)/64] |= (1UL<<((n)%64)))
+#define CPU_CLR(n,s)     ((s)->__bits[(n)/64] &= ~(1UL<<((n)%64)))
+#define CPU_ISSET(n,s)   (!!((s)->__bits[(n)/64] & (1UL<<((n)%64))))
+#define CPU_LEVEL_WHICH  3
+#define CPU_WHICH_PID    2
+int cpuset_setaffinity(int,int,id_t,size_t,const cpuset_t *);
+int cpuset_getaffinity(int,int,id_t,size_t,cpuset_t *);
+#endif
+STUB
+
           echo "Cross-compiling backboardd..."
           clang-18 -target aarch64-unknown-freebsd15.0 \
             --sysroot=${SYSROOT} \
