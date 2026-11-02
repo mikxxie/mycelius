@@ -94,11 +94,12 @@ static void scene_init_home(int frame_w, int frame_h) {
     if (tile_w < 1) tile_w = 1;
     if (tile_h < 1) tile_h = 1;
 
+    /* Colors: 0xRRGGBB (top byte unused/0) */
     const uint32_t colors[] = {
-        0x004caf50, 0x002196f3, 0x009c27b0, 0x00ff9800,
-        0x00f44336, 0x00009688, 0x00795548, 0x00607d8b,
-        0x00ffeb3b, 0x009e9e9e, 0x008bc34a, 0x0003a9f4,
-        0x00e91e63, 0x00ffc107, 0x0000bcd4, 0x007b1fa2,
+        0x4caf50, 0x2196f3, 0x9c27b0, 0xff9800,
+        0xf44336, 0x009688, 0x795548, 0x607d8b,
+        0xffeb3b, 0x9e9e9e, 0x8bc34a, 0x03a9f4,
+        0xe91e63, 0xffc107, 0x00bcd4, 0x7b1fa2,
     };
     const char *labels[] = {
         "Phone","Mail","Safari","Music",
@@ -109,14 +110,15 @@ static void scene_init_home(int frame_w, int frame_h) {
     int n = 0;
     for (int r = 0; r < rows && n < MAX_TILES; r++) {
         for (int c = 0; c < cols && n < MAX_TILES; c++) {
-            struct tile *t = &g_tiles[n++];
+            struct tile *t = &g_tiles[n];
             t->x = pad + c * (tile_w + pad);
             t->y = status_h + pad + r * (tile_h + pad);
             t->w = tile_w;
             t->h = tile_h;
             t->color = colors[n % (sizeof(colors)/sizeof(colors[0]))];
-            t->id = (uint32_t)n;
+            t->id = (uint32_t)(n + 1);
             t->label = labels[n % (sizeof(labels)/sizeof(labels[0]))];
+            n++;
         }
     }
     g_ntiles = n;
@@ -136,12 +138,12 @@ static int hit_tile(int x, int y) {
 /* ---------- compose ---------- */
 
 static void compose(struct render *r, int frame_w, int frame_h) {
-    /* Background: dark charcoal (like iOS home). */
-    render_clear(r, 0x001a1a1a);
+    /* Background: dark charcoal (0x1a1a1a = R:26 G:26 B:26) */
+    render_clear(r, 0x1a1a1a);
 
-    /* Status bar. */
-    render_rect(r, 0, 0, frame_w, 44, 0x00000000);
-    render_rect(r, 0, 0, frame_w, 2, 0x00333333);
+    /* Status bar: solid black strip at top */
+    render_rect(r, 0, 0, frame_w, 44, 0x000000);
+    render_rect(r, 0, 43, frame_w, 1, 0x333333); /* bottom border */
 
     /* Draw home tiles. */
     for (int i = 0; i < g_ntiles; i++) {
@@ -149,23 +151,23 @@ static void compose(struct render *r, int frame_w, int frame_h) {
         uint32_t color = t->color;
         if (i == g_fg_app) {
             /* Highlight selected tile. */
-            color = 0x00555555;
+            color = 0x555555;
         }
         render_rect(r, t->x, t->y, t->w, t->h, color);
-        /* Tile border. */
-        render_rect(r, t->x, t->y, t->w, 2, 0x00ffffff);
-        render_rect(r, t->x, t->y, 2, t->h, 0x00ffffff);
+        /* Tile border: white top + left edge */
+        render_rect(r, t->x, t->y, t->w, 2, 0xffffff);
+        render_rect(r, t->x, t->y, 2, t->h, 0xffffff);
     }
 
     /* Foreground app: fullscreen overlay when launched. */
     if (g_fg_app >= 0 && g_fg_app < g_ntiles) {
         struct tile *t = &g_tiles[g_fg_app];
         render_rect(r, 0, 44, frame_w, frame_h - 44, t->color);
-        /* App title bar (no window chrome - iOS style). */
-        render_rect(r, 0, 44, frame_w, 40, 0x00000000);
-        render_rect(r, 0, 44, frame_w, 2, 0x00222222);
-        /* A "home" indicator. */
-        render_rect(r, frame_w / 2 - 24, 86, 48, 8, 0x00ffffff);
+        /* App title bar */
+        render_rect(r, 0, 44, frame_w, 40, 0x000000);
+        render_rect(r, 0, 84, frame_w, 1, 0x222222);
+        /* Home indicator pill */
+        render_rect(r, frame_w / 2 - 24, frame_h - 16, 48, 8, 0xffffff);
     }
 }
 

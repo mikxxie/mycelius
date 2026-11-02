@@ -237,23 +237,29 @@ int main(int argc, char **argv) {
             }
         }
 
-        /* Synthetic event stream for CI (no hardware). */
+        /* Synthetic event stream for CI (no hardware).
+         * Send a small burst (3 taps) then go idle — so the final
+         * rendered frame is the home screen, not a fullscreen app. */
         if (synth && client_fd >= 0) {
             uint64_t now = 0;
             struct timespec ts;
             clock_gettime(CLOCK_MONOTONIC, &ts);
             now = (uint64_t)ts.tv_sec * 1000000000ULL + ts.tv_nsec;
-            if (now >= synth_next) {
+            static int synth_sent = 0;
+            if (synth_sent < 3 && now >= synth_next) {
                 struct bb_event bev;
                 memset(&bev, 0, sizeof(bev));
-                static int sx = 100;
+                /* Tap in the status bar area (y=10) — no tile hit,
+                 * just proves the IPC channel is alive. */
                 bev.type = BB_EV_TOUCH_DOWN;
-                bev.x = sx % (LP_FRAME_W - 40) + 20;
-                bev.y = 400;
+                bev.x = 120 + synth_sent * 60;
+                bev.y = 10;   /* status bar: no tile here */
                 bev.timestamp_ns = now;
                 send_all(client_fd, &bev, sizeof(bev));
-                sx += 80;
-                synth_next = now + (uint64_t)LP_VSYNC_MS * 1000000ULL;
+                bev.type = BB_EV_TOUCH_UP;
+                send_all(client_fd, &bev, sizeof(bev));
+                synth_sent++;
+                synth_next = now + 500000000ULL; /* 500ms between taps */
             }
         }
     }
