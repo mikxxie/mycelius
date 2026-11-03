@@ -13,7 +13,7 @@ concurrency:
 jobs:
   build-test:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 30
     steps:
       - name: Checkout mycelius
         uses: actions/checkout@v4
@@ -22,10 +22,9 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
-            clang-18 lld-18 ccache \
-            qemu-system-aarch64 qemu-efi-aarch64 \
-            dosfstools mtools parted curl xz-utils \
-            kpartx gdisk
+            build-essential ccache \
+            aarch64-linux-gnu-gcc \
+            curl xz-utils
 
       - name: Cache ccache
         uses: actions/cache@v4
@@ -35,121 +34,30 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-ccache-
 
-      - name: Cache FreeBSD archives
-        uses: actions/cache@v4
-        id: cache-freebsd
-        with:
-          path: /tmp/freebsd-cache
-          key: freebsd-15.0-arm64-vmimg-v3
-
-      - name: Fetch FreeBSD 15.0 ARM64 assets
-        run: |
-          mkdir -p /tmp/freebsd-cache /tmp/freebsd
-
-          # kernel.txz — for the kernel binary only
-          if [ ! -f /tmp/freebsd-cache/kernel.txz ]; then
-            echo "Downloading kernel.txz..."
-            curl -f -sSL \
-              https://download.freebsd.org/releases/arm64/aarch64/15.0-RELEASE/kernel.txz \
-              -o /tmp/freebsd-cache/kernel.txz
-          fi
-
-          # base.txz — for loader.efi and boot/lua scripts
-          if [ ! -f /tmp/freebsd-cache/base.txz ]; then
-            echo "Downloading base.txz..."
-            curl -f -sSL \
-              https://download.freebsd.org/releases/arm64/aarch64/15.0-RELEASE/base.txz \
-              -o /tmp/freebsd-cache/base.txz
-          fi
-
-          # VM image — proper UFS2 rootfs, no makefs needed
-          if [ ! -f /tmp/freebsd-cache/freebsd-ufs.raw.xz ]; then
-            echo "Downloading FreeBSD VM image (~580MB)..."
-            curl -f -sSL \
-              https://download.freebsd.org/releases/VM-IMAGES/15.0-RELEASE/aarch64/Latest/FreeBSD-15.0-RELEASE-arm64-aarch64-ufs.raw.xz \
-              -o /tmp/freebsd-cache/freebsd-ufs.raw.xz
-          fi
-
-          echo "Extracting kernel from kernel.txz..."
-          tar -xf /tmp/freebsd-cache/kernel.txz -C /tmp/freebsd ./boot/kernel/kernel
-
-          echo "Extracting loader.efi + boot/lua from base.txz..."
-          tar -xf /tmp/freebsd-cache/base.txz -C /tmp/freebsd \
-            ./boot/loader.efi ./boot/lua
-
-          echo "Assets ready:"
-          ls -lh /tmp/freebsd/boot/kernel/kernel /tmp/freebsd/boot/loader.efi
-
-      - name: Build backboardd + launchpad (native Linux, for smoke test)
+      - name: Build backboardd + launchpad (native Linux)
         env:
           CC: ccache cc
         run: |
           CC="ccache cc" make -C usr.sbin/backboardd
           CC="ccache cc" make -C usr.sbin/launchpad
+          file usr.sbin/backboardd/backboardd usr.sbin/launchpad/launchpad
 
-      - name: Cross-compile backboardd + launchpad → aarch64 FreeBSD
+      - name: Cross-compile backboardd + launchpad → aarch64-linux-gnu
         run: |
-          # Extract sysroot from base.txz (already downloaded)
-          mkdir -p /tmp/freebsd-sysroot
-          echo "Extracting sysroot from base.txz..."
-          tar -xf /tmp/freebsd-cache/base.txz -C /tmp/freebsd-sysroot \
-            ./usr/include ./lib ./usr/lib 2>/dev/null || true
-          SYSROOT=/tmp/freebsd-sysroot
-          INCS="-I${SYSROOT}/usr/include -Iusr.sbin/include"
-
-          # Stub out kernel-only FreeBSD headers missing from base.txz sysroot
-          SYSINC="${SYSROOT}/usr/include/sys"
-          mkdir -p "${SYSINC}"
-
-          [ -f "${SYSINC}/rprio.h" ] || cat > "${SYSINC}/rprio.h" << 'STUB'
-          #ifndef _SYS_RPRIO_H_
-          #define _SYS_RPRIO_H_
-          #include <sys/types.h>
-          #define RTP_PRIO_REALTIME 2
-          #define RTP_PRIO_NORMAL   3
-          #define RTP_PRIO_IDLE     4
-          #define RTP_SET           1
-          #define RTP_GET           0
-          struct rtprio { unsigned short type; unsigned short prio; };
-          int rtprio(int, pid_t, struct rtprio *);
-          #endif
-          STUB
-
-          [ -f "${SYSINC}/cpuset.h" ] || cat > "${SYSINC}/cpuset.h" << 'STUB'
-          #ifndef _SYS_CPUSET_H_
-          #define _SYS_CPUSET_H_
-          #include <sys/types.h>
-          #define CPU_SETSIZE 256
-          typedef struct { unsigned long __bits[CPU_SETSIZE/64]; } cpuset_t;
-          #define CPU_ZERO(s)      __builtin_memset((s),0,sizeof(*(s)))
-          #define CPU_SET(n,s)     ((s)->__bits[(n)/64] |= (1UL<<((n)%64)))
-          #define CPU_CLR(n,s)     ((s)->__bits[(n)/64] &= ~(1UL<<((n)%64)))
-          #define CPU_ISSET(n,s)   (!!((s)->__bits[(n)/64] & (1UL<<((n)%64))))
-          #define CPU_LEVEL_WHICH  3
-          #define CPU_WHICH_PID    2
-          int cpuset_setaffinity(int,int,id_t,size_t,const cpuset_t *);
-          int cpuset_getaffinity(int,int,id_t,size_t,cpuset_t *);
-          #endif
-          STUB
-
+          SYSROOT=""
+          INCS="-Iusr.sbin/include"
           echo "Cross-compiling backboardd..."
-          clang-18 -target aarch64-unknown-freebsd15.0 \
-            --sysroot=${SYSROOT} \
-            -fuse-ld=lld-18 \
+          aarch64-linux-gnu-gcc \
             ${INCS} \
             -O2 -Wall -std=c11 \
             usr.sbin/backboardd/backboardd.c \
             -o /tmp/backboardd.aarch64
-
           echo "Cross-compiling launchpad..."
-          clang-18 -target aarch64-unknown-freebsd15.0 \
-            --sysroot=${SYSROOT} \
-            -fuse-ld=lld-18 \
+          aarch64-linux-gnu-gcc \
             ${INCS} \
             -O2 -Wall -std=c11 \
             usr.sbin/launchpad/launchpad.c usr.sbin/launchpad/render.c \
             -o /tmp/launchpad.aarch64
-
           echo "Built:"
           file /tmp/backboardd.aarch64 /tmp/launchpad.aarch64
 
@@ -169,164 +77,16 @@ jobs:
           file /tmp/lp_frame.ppm | grep -q "480 x 800"
           echo "Smoke test PASSED — frame is $(wc -c < /tmp/lp_frame.ppm) bytes"
 
-      - name: Assemble bootable UEFI disk image (UFS2 from official FreeBSD VM)
-        run: |
-          IMG=/tmp/mycelius-arm64.img
-          rm -f $IMG
-
-          echo "Decompressing FreeBSD VM image..."
-          xz -d -k /tmp/freebsd-cache/freebsd-ufs.raw.xz -c > /tmp/freebsd-base.raw
-          ls -lh /tmp/freebsd-base.raw
-
-          echo "Creating final 2G disk image..."
-          qemu-img create -f raw $IMG 2G
-
-          echo "Partitioning: ESP (149MiB) + rootfs (rest)..."
-          parted $IMG --script mklabel gpt
-          parted $IMG --script mkpart ESP fat32 1MiB 150MiB
-          parted $IMG --script set 1 esp on
-          parted $IMG --script mkpart rootfs freebsd-ufs 150MiB 100%
-
-          # ── ESP (Partition 1): FAT32 with real FreeBSD boot files ──────────
-          LOOPDEV=$(sudo losetup -fP --show $IMG)
-          sudo mkfs.fat -F 32 ${LOOPDEV}p1
-          sudo mkdir -p /mnt/esp
-          sudo mount -t vfat ${LOOPDEV}p1 /mnt/esp
-          sudo mkdir -p /mnt/esp/EFI/BOOT /mnt/esp/boot/kernel /mnt/esp/boot/modules /mnt/esp/efi/freebsd /mnt/esp/mycelius /mnt/esp/boot/lua
-
-          sudo cp /tmp/freebsd/boot/loader.efi /mnt/esp/EFI/BOOT/BOOTAA64.EFI
-          sudo cp /tmp/freebsd/boot/kernel/kernel /mnt/esp/boot/kernel/kernel
-
-          # Extract GPT geom module from kernel.txz so the loader can parse GPT partitions
-          tar -xf /tmp/freebsd-cache/kernel.txz -C /tmp/freebsd ./boot/kernel/geom_part_gpt.ko
-          sudo cp /tmp/freebsd/boot/kernel/geom_part_gpt.ko /mnt/esp/boot/modules/geom_part_gpt.ko
-
-          # Boot config: tunables in loader.conf, mount device in loader.env
-          cat > /tmp/loader.conf << 'EOF'
-          geom_part_gpt_load="YES"
-          autoboot_delay="2"
-          bootfile="/boot/kernel/kernel"
-          EOF
-          sudo cp /tmp/loader.conf /mnt/esp/boot/loader.conf
-
-          cat > /tmp/loader.env << 'EOF'
-          vfs.root.mountfrom="ufs:/dev/vtblk0p2"
-          EOF
-          sudo cp /tmp/loader.env /mnt/esp/efi/freebsd/loader.env
-
-          # Loader script: show loading text, then boot automatically
-          cat > /tmp/loader.rc << 'LDR'
-          echo "Loading mycelius..."
-          boot
-          LDR
-          sudo cp /tmp/loader.rc /mnt/esp/boot/loader.rc
-
-          # Lua boot scripts (no more "cannot open loader.lua" error)
-          if [ -d /tmp/freebsd/boot/lua ]; then
-            sudo cp -r /tmp/freebsd/boot/lua/* /mnt/esp/boot/lua/ || true
-          fi
-
-          # Our daemons on the ESP too (accessible from loader shell)
-          sudo cp /tmp/backboardd.aarch64 /mnt/esp/mycelius/backboardd
-          sudo cp /tmp/launchpad.aarch64  /mnt/esp/mycelius/launchpad
-          sudo cp /tmp/lp_frame.ppm        /mnt/esp/mycelius/frame.ppm
-
-          sudo umount /mnt/esp
-          sudo losetup -d ${LOOPDEV}
-          echo "ESP written."
-
-          # ── Rootfs (Partition 2): inject daemons into official FreeBSD UFS2 ──
-          echo "Injecting daemons into FreeBSD UFS2 rootfs..."
-
-          # Find the rootfs partition offset in the FreeBSD VM image
-          FBSD_P2_START=$(parted /tmp/freebsd-base.raw --script unit s print | awk '/^ 2 /{print $2}' | tr -d s)
-          FBSD_P2_END=$(parted   /tmp/freebsd-base.raw --script unit s print | awk '/^ 2 /{print $3}' | tr -d s)
-          FBSD_P2_SIZE=$(( FBSD_P2_END - FBSD_P2_START + 1 ))
-          echo "FreeBSD VM rootfs: sector $FBSD_P2_START to $FBSD_P2_END ($FBSD_P2_SIZE sectors)"
-
-          # Copy the UFS2 partition verbatim (it's already the right filesystem)
-          dd if=/tmp/freebsd-base.raw of=/tmp/rootfs.ufs \
-             bs=512 skip=$FBSD_P2_START count=$FBSD_P2_SIZE
-          ls -lh /tmp/rootfs.ufs
-
-          # Loop-mount and inject our files
-          LOOPDEV=$(sudo losetup -fP --show /tmp/rootfs.ufs)
-          echo "Loop device: $LOOPDEV"
-          sudo mkdir -p /mnt/fbsd
-          # FreeBSD UFS2 — Linux can read/write with ufs2 driver (CONFIG_UFS_FS_WRITE)
-          sudo mount -t ufs -o rw,ufstype=ufs2 ${LOOPDEV} /mnt/fbsd || {
-            echo "Direct ufs2 mount failed, trying fuse approach..."
-            sudo apt-get install -y -qq ufsutils 2>/dev/null || true
-            sudo fuse-ext2 ${LOOPDEV} /mnt/fbsd -o rw+ 2>/dev/null || {
-              echo "WARN: Cannot mount UFS2 for injection — copying rootfs.ufs verbatim"
-              sudo losetup -d ${LOOPDEV}
-              ROOT_START=$(parted $IMG --script unit s print | awk '/^ 2 /{print $2}' | tr -d s)
-              dd if=/tmp/rootfs.ufs of=$IMG bs=512 seek=$ROOT_START conv=notrunc
-              echo "Rootfs copied (daemons injected via rc.local not available in this path)"
-              echo "Image done: $IMG"; ls -lh $IMG
-              exit 0
-            }
-          }
-
-          # Inject backboardd + launchpad
-          sudo cp /tmp/backboardd.aarch64 /mnt/fbsd/sbin/backboardd
-          sudo cp /tmp/launchpad.aarch64  /mnt/fbsd/sbin/launchpad
-          sudo chmod 0555 /mnt/fbsd/sbin/backboardd /mnt/fbsd/sbin/launchpad
-
-          # rc.local — auto-start on boot
-          sudo tee /mnt/fbsd/etc/rc.local << 'RCEOF'
-          #!/bin/sh
-          echo "=========================================="
-          echo "  mycelius: starting UI stack"
-          echo "=========================================="
-          /sbin/backboardd -s /var/run/lp_bb.sock >/var/log/bb.log 2>&1 &
-          sleep 1
-          /sbin/launchpad -b /var/run/lp_bb.sock -o /var/run/lp_frame.ppm >/var/log/lp.log 2>&1 &
-          echo "LaunchPad running."
-          RCEOF
-          sudo chmod 0755 /mnt/fbsd/etc/rc.local
-
-          echo "Files injected:"
-          ls -lh /mnt/fbsd/sbin/backboardd /mnt/fbsd/sbin/launchpad /mnt/fbsd/etc/rc.local
-
-          sudo umount /mnt/fbsd
-          sudo losetup -d ${LOOPDEV}
-
-          # Write the modified UFS2 partition into our image
-          ROOT_START=$(parted $IMG --script unit s print | awk '/^ 2 /{print $2}' | tr -d s)
-          dd if=/tmp/rootfs.ufs of=$IMG bs=512 seek=$ROOT_START conv=notrunc
-          echo "Image complete: $IMG"
-          ls -lh $IMG
-
-      - name: QEMU UEFI boot test (60s, look for shell or launchpad start)
-        run: |
-          timeout 90 qemu-system-aarch64 \
-            -M virt \
-            -cpu cortex-a72 \
-            -m 2G \
-            -smp 2 \
-            -bios /usr/share/qemu-efi-aarch64/QEMU_EFI.fd \
-            -drive file=/tmp/mycelius-arm64.img,format=raw,if=none,id=hd0 \
-            -device virtio-blk-device,drive=hd0 \
-            -display none \
-            -serial stdio \
-            -no-reboot 2>&1 | tee /tmp/qemu.log || true
-
-          echo "=== QEMU output tail ==="
-          tail -40 /tmp/qemu.log
-          # Pass if we got past loader (UFS2 mounted = success)
-          grep -q "FreeBSD/arm64" /tmp/qemu.log && echo "BOOT: FreeBSD kernel loaded OK" || echo "WARN: kernel load not confirmed"
-
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: mycelius-build
           path: |
-            /tmp/mycelius-arm64.img
             /tmp/backboardd.aarch64
             /tmp/launchpad.aarch64
             usr.sbin/backboardd/backboardd
             usr.sbin/launchpad/launchpad
             /tmp/lp_frame.ppm
-            /tmp/qemu.log
+            /tmp/bb.log
+            /tmp/lp.log
           retention-days: 7

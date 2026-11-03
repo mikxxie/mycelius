@@ -12,8 +12,8 @@
  * render server: it owns the scene graph, hit-tests touches, composites
  * the frame buffer, and forwards touch to the foreground application.
  *
- * v0 keeps the wire format POD so it crosses the FreeBSD <-> Linux CI
- * boundary and aarch64 unknown-freebsd target unchanged.
+ * v0 keeps the wire format POD so it crosses the Linux CI boundary
+ * and aarch64-linux-gnu target unchanged.
  */
 
 #define LP_BACKBOARD_SOCK "/var/run/lp_bb.sock"

@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE
+#define _GNU_SOURCE
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,20 +11,14 @@
 #include <errno.h>
 #include <time.h>
 #include <poll.h>
+#include <sched.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/stat.h>
+#include <sys/resource.h>
 
-#ifdef __FreeBSD__
-#include <sys/cpuset.h>
-#include <sys/rprio.h>
-#include <sys/resource.h>
-#include <dev/evdev/input.h>
-#else
 #include <linux/input.h>
-#include <sys/resource.h>
-#endif
 
 #include "lp_proto.h"
 
@@ -35,27 +30,20 @@ static void handle_signal(int sig) {
 }
 
 static void set_high_priority(void) {
-#ifdef __FreeBSD__
     /* Real-time, high priority: input must never stall. */
-    struct rtprio rt;
-    memset(&rt, 0, sizeof(rt));
-    rt.type = RTP_PRIO_REALTIME;
-    rt.prio = 40;
-    if (rtprio(RTP_SET, 0, &rt) != 0) {
-        fprintf(stderr, "backboardd: rtprio failed: %s\n", strerror(errno));
+    struct sched_param sp;
+    memset(&sp, 0, sizeof(sp));
+    sp.sched_priority = 40;
+    if (sched_setscheduler(0, SCHED_FIFO, &sp) != 0) {
+        fprintf(stderr, "backboardd: sched_setscheduler failed: %s\n", strerror(errno));
     }
     /* Bind to core 0 (shared with LaunchPad foreground on big.LITTLE). */
-    cpuset_t mask;
+    cpu_set_t mask;
     CPU_ZERO(&mask);
     CPU_SET(0, &mask);
-    if (cpuset_setaffinity(CPU_LEVEL_WHICH, CPU_WHICH_PID, -1,
-                           sizeof(mask), &mask) != 0) {
-        fprintf(stderr, "backboardd: cpuset failed: %s\n", strerror(errno));
+    if (sched_setaffinity(0, sizeof(mask), &mask) != 0) {
+        fprintf(stderr, "backboardd: sched_setaffinity failed: %s\n", strerror(errno));
     }
-#else
-    /* Linux CI: best-effort nice boost. */
-    setpriority(PRIO_PROCESS, 0, -10);
-#endif
 }
 
 /* Open an evdev input device. Returns -1 on failure. */
@@ -71,11 +59,7 @@ static int open_evdev(const char *path) {
 
 /* Read one evdev input_event into out. Returns 0 on success, -1 none. */
 static int read_evdev_event(int fd, struct bb_event *out) {
-#ifdef __FreeBSD__
     struct input_event ev;
-#else
-    struct input_event ev;
-#endif
     ssize_t n = read(fd, &ev, sizeof(ev));
     if (n < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) return -1;

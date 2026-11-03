@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE
+#define _GNU_SOURCE
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,20 +11,14 @@
 #include <errno.h>
 #include <time.h>
 #include <poll.h>
+#include <sched.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <sys/resource.h>
 
 #ifndef MSG_DONTWAIT
 #define MSG_DONTWAIT 0x40
-#endif
-
-#ifdef __FreeBSD__
-#include <sys/cpuset.h>
-#include <sys/rprio.h>
-#include <sys/resource.h>
-#else
-#include <sys/resource.h>
 #endif
 
 #include "lp_proto.h"
@@ -37,24 +32,20 @@ static void handle_signal(int sig) {
 }
 
 static void set_high_priority(void) {
-#ifdef __FreeBSD__
-    struct rtprio rt;
-    memset(&rt, 0, sizeof(rt));
-    rt.type = RTP_PRIO_REALTIME;
-    rt.prio = 50; /* UI shell above backboardd/input */
-    if (rtprio(RTP_SET, 0, &rt) != 0) {
-        fprintf(stderr, "launchpad: rtprio failed: %s\n", strerror(errno));
+    /* Real-time, high priority: UI shell above backboardd/input */
+    struct sched_param sp;
+    memset(&sp, 0, sizeof(sp));
+    sp.sched_priority = 50;
+    if (sched_setscheduler(0, SCHED_FIFO, &sp) != 0) {
+        fprintf(stderr, "launchpad: sched_setscheduler failed: %s\n", strerror(errno));
     }
-    cpuset_t mask;
+    /* Bind to core 0 (shared with backboardd on big.LITTLE). */
+    cpu_set_t mask;
     CPU_ZERO(&mask);
     CPU_SET(0, &mask);
-    if (cpuset_setaffinity(CPU_LEVEL_WHICH, CPU_WHICH_PID, -1,
-                           sizeof(mask), &mask) != 0) {
-        fprintf(stderr, "launchpad: cpuset failed: %s\n", strerror(errno));
+    if (sched_setaffinity(0, sizeof(mask), &mask) != 0) {
+        fprintf(stderr, "launchpad: sched_setaffinity failed: %s\n", strerror(errno));
     }
-#else
-    setpriority(PRIO_PROCESS, 0, -8);
-#endif
 }
 
 static int connect_unix(const char *path) {
@@ -177,7 +168,7 @@ static void compose(struct render *r, int frame_w, int frame_h) {
 
 static void forward_touch_to_app(int app_id, const struct bb_event *ev) {
     /* v0: LaunchPad dictates the app; it forwards the touch to the
-     * foreground app's Mach-port-equivalent (Unix socket on FreeBSD).
+     * foreground app's Mach-port-equivalent (Unix socket).
      * The app is blind to other windows; it only receives its own events. */
     fprintf(stderr,
             "launchpad: touch type=%u app=%u x=%d y=%d (forwarded to app)\n",

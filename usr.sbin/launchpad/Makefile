@@ -1,8 +1,8 @@
-# launchpad - SpringBoard-style UI shell / render server for mycelius
+# launchpad - SpringBoard-style UI shell / render server for mycelius (Linux)
 #
-# Portable GNU Makefile. Builds on Linux CI with cc/clang; cross-compiles
-# for aarch64-unknown-freebsd with clang-18/lld-18 via `make cross`.
-# On FreeBSD base this becomes a bsd.prog.mk port (PROG=launchpad).
+# Portable GNU Makefile. Builds on Linux with cc/clang; cross-compiles
+# for aarch64-linux-gnu via `make cross`.
+# BSD-style compositor: Unix domain socket input → scene graph → framebuffer.
 
 CC ?= cc
 CFLAGS ?= -O2 -Wall -Wextra -std=c11 -I../include
@@ -21,11 +21,10 @@ all: $(PROG)
 $(PROG): $(SRCS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
-# Cross-build for aarch64-unknown-freebsd (clang-18/lld-18).
-#   SYSROOT=/path/to/freebsd make cross CC=clang-18
-# Compiles to object files only (linking needs full FreeBSD libs).
-cross: CC = clang-18
-cross: CFLAGS += -target aarch64-unknown-freebsd --sysroot=$(SYSROOT) \
+# Cross-build for aarch64-linux-gnu.
+#   SYSROOT=/path/to/linux make cross CC=aarch64-linux-gnu-gcc
+cross: CC = aarch64-linux-gnu-gcc
+cross: CFLAGS += -target aarch64-linux-gnu --sysroot=$(SYSROOT) \
                  -I$(SYSROOT)/usr/include -I../include
 cross:
 	@if [ -z "$(SYSROOT)" ]; then echo "SYSROOT required"; exit 1; fi
