@@ -1,0 +1,11 @@
+# Build artifacts
+usr.sbin/backboardd/backboardd
+usr.sbin/launchpad/launchpad
+*.o
+*.a
+
+# QEMU build output
+/tmp/mycelius-build/
+/tmp/mycelius-initramfs.gz
+/tmp/mycelius-kernel
+/tmp/linux-template/
