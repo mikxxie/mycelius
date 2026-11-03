@@ -204,10 +204,10 @@ jobs:
           tar -xf /tmp/freebsd-cache/kernel.txz -C /tmp/freebsd ./boot/kernel/geom_part_gpt.ko
           mcopy -i /tmp/esp.fat /tmp/freebsd/boot/kernel/geom_part_gpt.ko ::boot/modules/geom_part_gpt.ko
 
-          # Boot config: point rootfs at vtblk0p2 (partition 2 of our disk) and load GPT geom
+          # Boot config: point rootfs at vtbd0p2 (partition 2 of our disk) and load GPT geom
           cat > /tmp/loader.conf << 'EOF'
-          autoboot_delay="0"
-          vfs.root.mountfrom="ufs:/dev/vtblk0p2"
+          autoboot_delay="2"
+          vfs.root.mountfrom="ufs:/dev/vtbd0p2"
           bootfile="/boot/kernel/kernel"
           geom_part_gpt_load="YES"
           EOF
@@ -217,9 +217,6 @@ jobs:
           cat > /tmp/loader.rc << 'LDR'
           echo "Loading mycelius..."
           load geom_part_gpt
-          set vfs.root.mountfrom="ufs:/dev/vtblk0p2"
-          set autoboot_delay=0
-          load
           boot
           LDR
           mcopy -i /tmp/esp.fat /tmp/loader.rc ::boot/loader.rc
