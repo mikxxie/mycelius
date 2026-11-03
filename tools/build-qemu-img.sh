@@ -6,6 +6,7 @@
 set -eu
 
 OUTDIR="${1:-/tmp}"
+mkdir -p "$OUTDIR"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 XNU_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 ROOTFS_DIR="$XNU_ROOT/rootfs"

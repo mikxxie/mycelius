@@ -17,7 +17,7 @@ SBINDIR ?= $(PREFIX)/sbin
 
 ROOTFS_DIR = ../../rootfs
 TOOLS_DIR = ../../tools
-IMG_OUT = /tmp/mycelius-arm64.img
+BUILD_DIR = /tmp/mycelius-build
 INITRAMFS_OUT = /tmp/mycelius-initramfs.gz
 KERNEL_OUT = /tmp/mycelius-kernel
 
@@ -37,10 +37,19 @@ cross: $(SRCS)
 	file $(PROG) | grep -q aarch64
 
 # Build QEMU boot image (initramfs + kernel) and launch QEMU.
+# Prerequisites: an aarch64 Linux kernel at /tmp/mycelius-kernel
+#   (e.g. from kernel.org or your distro's arm64 kernel package)
 qemu: cross
-	sh $(TOOLS_DIR)/build-qemu-img.sh $(IMG_OUT)
+	@mkdir -p $(BUILD_DIR)
+	sh $(TOOLS_DIR)/build-qemu-img.sh $(BUILD_DIR)
 	@if [ ! -f $(KERNEL_OUT) ]; then \
-		echo "ERROR: No kernel available. Download an aarch64 kernel to $(KERNEL_OUT)"; \
+		echo ""; \
+		echo "ERROR: No kernel found at $(KERNEL_OUT)"; \
+		echo "  Download an aarch64 Linux kernel, e.g.:"; \
+		echo "    curl -L -o $(KERNEL_OUT) \\"; \
+		echo "      https://kernel.ubuntu.com/~kernel-ppa/mainline/v6.6/current/arm64/linux-image-unsigned-6.6.*-generic_*_arm64.deb"; \
+		echo "  then extract /boot/vmlinuz-* to $(KERNEL_OUT)"; \
+		echo ""; \
 		exit 1; \
 	fi
 	qemu-system-aarch64 \
