@@ -199,13 +199,24 @@ jobs:
           mcopy -i /tmp/esp.fat /tmp/freebsd/boot/loader.efi ::EFI/BOOT/BOOTAA64.EFI
           mcopy -i /tmp/esp.fat /tmp/freebsd/boot/kernel/kernel ::boot/kernel/kernel
 
-          # Boot config: point rootfs at vtbd0p2 (partition 2 of our disk)
+          # Boot config: point rootfs at vtblk0p2 (partition 2 of our disk) and load GPT geom
           cat > /tmp/loader.conf << 'EOF'
-          autoboot_delay="2"
-          vfs.root.mountfrom="ufs:/dev/vtbd0p2"
+          autoboot_delay="1"
+          vfs.root.mountfrom="ufs:/dev/vtblk0p2"
           bootfile="/boot/kernel/kernel"
+          geom_part_gpt_load="YES"
           EOF
           mcopy -i /tmp/esp.fat /tmp/loader.conf ::boot/loader.conf
+
+          # Loader script: show loading spinner, then boot automatically
+          cat > /tmp/loader.rc << 'LDR'
+          # mycelius boot — loading spinner then boot
+          echo "Loading mycelius..."
+          echo ""
+          load
+          boot
+          LDR
+          mcopy -i /tmp/esp.fat /tmp/loader.rc ::boot/loader.rc
 
           # Lua boot scripts (no more "cannot open loader.lua" error)
           if [ -d /tmp/freebsd/boot/lua ]; then
