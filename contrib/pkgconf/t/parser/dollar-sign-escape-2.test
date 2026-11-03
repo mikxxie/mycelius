@@ -1,4 +1,0 @@
-PackageSearchPath: lib1
-Query: dollar-sign-escape-2
-WantedFlags: cflags
-ExpectedStdout: $foo

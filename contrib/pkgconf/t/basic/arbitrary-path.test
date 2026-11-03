@@ -1,3 +1,0 @@
-Query: %TEST_FIXTURES_DIR%/lib1/foo.pc
-WantedFlags: libs
-ExpectedStdout: -L/test/lib -lfoo

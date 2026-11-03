@@ -1,6 +1,0 @@
-Tool: spdxtool
-ToolArgs: test3
-Environment: PKG_CONFIG_PATH=%TEST_FIXTURES_DIR%/lib-sbom
-ExpectedStdout: "type": "software_Package"
-MatchStdout: Partial
-ExpectedExitCode: 0

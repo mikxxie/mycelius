@@ -1,4 +1,0 @@
-PackageSearchPath: lib1
-Query: comments-in-fields
-WantedFlags: libs
-ExpectedStdout: -lfoo

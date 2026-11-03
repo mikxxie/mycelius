@@ -1,6 +1,0 @@
-PackageSearchPath: lib1
-WantedFlags: dump-license
-Query: bar
-ExpectedStdout: bar: NOASSERTION
-ExpectedStdout: foo: ISC
-MatchStdout: partial

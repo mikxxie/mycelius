@@ -1,4 +1,0 @@
-Tool: pkgconf
-ToolArgs: --define-prefix --dont-define-prefix --variable=prefix %TEST_FIXTURES_DIR%/lib-relocatable/lib/pkgconfig/foo.pc
-ExpectedStdout: /test
-ExpectedExitCode: 0

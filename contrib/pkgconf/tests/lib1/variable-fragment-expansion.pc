@@ -1,7 +1,0 @@
-baselibs = -pthread -lm 
-
-Version: 1
-Name: foo
-Description: Repro
-
-Libs: -lfoo ${baselibs}

@@ -1,4 +1,0 @@
-Tool: pkgconf
-ToolArgs: --with-path=%TEST_FIXTURES_DIR%/lib1 --static --shared --libs baz
-ExpectedStdout: -L/test/lib -lbaz
-ExpectedExitCode: 0

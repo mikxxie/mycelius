@@ -1,4 +1,0 @@
-PackageSearchPath: lib1
-Query: provides-test-bar <= 1.2.0
-WantedFlags: exists
-ExpectedExitCode: 0

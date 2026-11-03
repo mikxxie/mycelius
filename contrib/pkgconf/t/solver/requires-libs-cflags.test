@@ -1,4 +1,0 @@
-PackageSearchPath: lib1
-Query: baz
-WantedFlags: libs cflags
-ExpectedStdout: -fPIC -I/test/include/foo -L/test/lib -lbaz

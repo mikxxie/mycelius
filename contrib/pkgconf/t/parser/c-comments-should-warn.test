@@ -1,5 +1,0 @@
-PackageSearchPath: lib1
-Query: c-comment
-WantedFlags: validate
-ExpectedStderr: warning:
-MatchStderr: partial

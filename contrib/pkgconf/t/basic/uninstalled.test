@@ -1,4 +1,0 @@
-PackageSearchPath: lib1
-Query: omg
-WantedFlags: uninstalled
-ExpectedExitCode: 0

@@ -1,5 +1,0 @@
-PackageSearchPath: lib1
-DefineVariable: libdir=\${libdir}
-WantVariable: typelibdir
-Query: typelibdir
-ExpectedStdout: \${libdir}/typelibdir

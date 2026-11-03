@@ -1,3 +1,0 @@
-Query: pkgconf
-WantedFlags: exists
-ExpectedExitCode: 0

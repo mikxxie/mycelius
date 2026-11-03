@@ -1,4 +1,0 @@
-PackageSearchPath: lib1
-Query: bar
-WantedFlags: libs
-ExpectedStdout: -L/test/lib -lbar -lfoo

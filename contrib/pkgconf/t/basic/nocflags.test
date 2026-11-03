@@ -1,5 +1,0 @@
-PackageSearchPath: lib1
-Query: nocflag
-WantedFlags: cflags
-ExpectedStdout: 
-ExpectedExitCode: 0

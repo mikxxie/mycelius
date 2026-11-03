@@ -1,5 +1,0 @@
-Tool: pkgconf
-ToolArgs: --dump-personality
-ExpectedStdout: Triplet: default
-MatchStdout: Partial
-ExpectedExitCode: 0

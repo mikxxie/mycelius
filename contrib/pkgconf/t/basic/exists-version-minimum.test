@@ -1,4 +1,0 @@
-PackageSearchPath: lib1
-Query: foo > 1.2
-WantedFlags: exists
-ExpectedExitCode: 0

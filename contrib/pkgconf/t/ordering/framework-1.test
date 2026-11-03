@@ -1,4 +1,0 @@
-PackageSearchPath: lib1
-WantedFlags: libs
-Query: framework-1
-ExpectedStdout: -F/test/lib -framework framework-1

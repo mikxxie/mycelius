@@ -1,5 +1,0 @@
-PackageSearchPath: lib1
-Query: escaped-backslash
-WantedFlags: cflags
-ExpectedStdout: -IC:\\A
-SkipPlatforms: windows

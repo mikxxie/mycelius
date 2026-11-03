@@ -1,4 +1,0 @@
-Tool: pkgconf
-ToolArgs: --with-path=%TEST_FIXTURES_DIR%/lib1 --define-variable=prefix=/test2 --variable=prefix foo
-ExpectedStdout: /test2
-ExpectedExitCode: 0

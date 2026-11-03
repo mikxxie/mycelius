@@ -1,4 +1,0 @@
-PackageSearchPath: lib1
-Query: foo, metapackage-3
-WantedFlags: static libs-only-libname
-ExpectedStdout: -lbar -lfoo

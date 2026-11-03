@@ -1,3 +1,0 @@
-Tool: pkgconf
-ToolArgs: --with-path=%TEST_FIXTURES_DIR%/lib1 --max-version=0 "foo > 1"
-ExpectedExitCode: 0

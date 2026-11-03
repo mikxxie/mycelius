@@ -1,4 +1,0 @@
-WantVariable: prefix
-WantedFlags: define-prefix
-Query: %TEST_FIXTURES_DIR%/lib-relocatable/lib/pkgconfig/foo.pc
-ExpectedStdout: %TEST_FIXTURES_DIR%/lib-relocatable

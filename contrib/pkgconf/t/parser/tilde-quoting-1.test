@@ -1,4 +1,0 @@
-PackageSearchPath: lib1
-Query: tilde-quoting
-WantedFlags: libs
-ExpectedStdout: -L~ -ltilde

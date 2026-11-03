@@ -1,4 +1,0 @@
-Triplet: i386-linux-gnu
-DefaultSearchPaths: /usr/lib/i386-linux-gnu/pkgconfig:/usr/share/pkgconfig
-SystemIncludePaths: /usr/lib/i386-linux-gnu/include
-SystemLibraryPaths: /usr/lib/i386-linux-gnu/lib

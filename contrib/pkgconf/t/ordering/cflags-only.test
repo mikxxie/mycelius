@@ -1,4 +1,0 @@
-PackageSearchPath: lib1
-Query: cflags-libs-only
-WantedFlags: cflags-only-i cflags-only-other
-ExpectedStdout: -I/test/local/include/foo

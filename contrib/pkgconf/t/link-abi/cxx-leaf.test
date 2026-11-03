@@ -1,5 +1,0 @@
-PackageSearchPath: lib1
-Query: link-abi-cxx
-WantedFlags: link-abi
-ExpectedExitCode: 0
-ExpectedStdout: c++

@@ -1,3 +1,0 @@
-PackageSearchPath: lib1
-Query: tilde >= 1.0.0
-ExpectedExitCode: 1

@@ -1,3 +1,0 @@
-Query: %TEST_FIXTURES_DIR%/lib1/circular-3.pc
-WantedFlags: libs
-ExpectedStdout: -lcircular-3 -lcircular-1 -lcircular-2

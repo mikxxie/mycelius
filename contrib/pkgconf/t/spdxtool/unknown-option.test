@@ -1,3 +1,0 @@
-Tool: spdxtool
-ToolArgs: --bogus-option
-ExpectedExitCode: 1

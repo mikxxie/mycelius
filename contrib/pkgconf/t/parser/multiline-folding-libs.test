@@ -1,4 +1,0 @@
-PackageSearchPath: lib1
-Query: multiline-folding
-WantedFlags: libs
-ExpectedStdout: -qux -baz

@@ -1,4 +1,0 @@
-PackageSearchPath: lib1
-Query: malformed-1
-WantedFlags: validate
-ExpectedExitCode: 1

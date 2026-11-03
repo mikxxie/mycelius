@@ -1,5 +1,0 @@
-Environment: PKG_CONFIG_SYSROOT_DIR=/
-PackageSearchPath: lib1
-Query: baz
-WantedFlags: cflags
-ExpectedStdout: -fPIC -I/test/include/foo

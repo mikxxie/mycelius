@@ -1,5 +1,0 @@
-Environment: PKG_CONFIG_SYSROOT_DIR=/sysroot
-PackageSearchPath: lib1
-Query: omg
-WantedFlags: libs
-ExpectedStdout: -L/test/lib -lomg

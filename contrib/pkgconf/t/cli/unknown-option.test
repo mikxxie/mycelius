@@ -1,3 +1,0 @@
-Tool: pkgconf
-ToolArgs: --bogus-flag
-ExpectedExitCode: 1

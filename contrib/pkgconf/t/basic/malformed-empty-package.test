@@ -1,3 +1,0 @@
-PackageSearchPath: lib1
-Query: , foo
-ExpectedExitCode: 0

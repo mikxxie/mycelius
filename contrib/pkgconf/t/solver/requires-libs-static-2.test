@@ -1,4 +1,0 @@
-PackageSearchPath: lib1
-Query: static-libs
-WantedFlags: libs static
-ExpectedStdout: -lbar -lbar-private -L/test/lib -lfoo

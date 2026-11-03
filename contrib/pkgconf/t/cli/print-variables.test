@@ -1,6 +1,0 @@
-Tool: pkgconf
-ToolArgs: --with-path=%TEST_FIXTURES_DIR%/lib1 --print-variables foo
-ExpectedStdout: pcfiledir
-ExpectedStdout: includedir
-MatchStdout: partial
-ExpectedExitCode: 0

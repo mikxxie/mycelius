@@ -1,4 +1,0 @@
-PackageSearchPath: lib1
-Query: framework-with-libs
-WantedFlags: libs-only-other
-ExpectedStdout: -framework Security

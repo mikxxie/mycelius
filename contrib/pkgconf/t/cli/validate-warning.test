@@ -1,6 +1,0 @@
-Tool: pkgconf
-ToolArgs: --validate malformed-version
-Environment: PKG_CONFIG_PATH=%TEST_FIXTURES_DIR%/lib1
-ExpectedStdout: warning: malformed version field with whitespace
-MatchStdout: partial
-ExpectedExitCode: 0

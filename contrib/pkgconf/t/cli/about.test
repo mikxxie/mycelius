@@ -1,5 +1,0 @@
-Tool: pkgconf
-ToolArgs: --about
-ExpectedStdout: Permission to use, copy, modify
-MatchStdout: Partial
-ExpectedExitCode: 0

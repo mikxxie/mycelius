@@ -1,4 +1,0 @@
-PackageSearchPath: lib1
-Query: no-trailing-newline
-WantedFlags: cflags
-ExpectedStdout: -I/test/include/no-trailing-newline

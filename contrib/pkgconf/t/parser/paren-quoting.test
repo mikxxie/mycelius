@@ -1,4 +1,0 @@
-PackageSearchPath: lib1
-WantedFlags: libs
-Query: paren-quoting
-ExpectedStdout: -L$(libdir) -ltilde

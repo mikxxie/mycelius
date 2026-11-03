@@ -1,4 +1,0 @@
-PackageSearchPath: lib1
-WantVariable: Foo
-Query: case-sensitivity
-ExpectedStdout: 4

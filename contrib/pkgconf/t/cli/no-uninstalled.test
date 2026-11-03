@@ -1,3 +1,0 @@
-Tool: pkgconf
-ToolArgs: --with-path=%TEST_FIXTURES_DIR%/lib1 --no-uninstalled --exists omg
-ExpectedExitCode: 1

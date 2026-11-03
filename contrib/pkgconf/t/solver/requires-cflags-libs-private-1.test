@@ -1,4 +1,0 @@
-PackageSearchPath: lib1
-Query: cflags-libs-private-a
-WantedFlags: libs
-MatchStdout: empty
