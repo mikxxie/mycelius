@@ -188,46 +188,39 @@ jobs:
           parted $IMG --script mkpart rootfs freebsd-ufs 150MiB 100%
 
           # ── ESP (Partition 1): FAT32 with real FreeBSD boot files ──────────
-          dd if=/dev/zero of=/tmp/esp.fat bs=1M count=149
-          mkfs.fat -F 32 /tmp/esp.fat
-          mmd -i /tmp/esp.fat ::EFI
-          mmd -i /tmp/esp.fat ::EFI/BOOT
-          mmd -i /tmp/esp.fat ::boot
-          mmd -i /tmp/esp.fat ::boot/kernel
-          mmd -i /tmp/esp.fat ::boot/modules
-          mmd -i /tmp/esp.fat ::mycelius
+          LOOPDEV=$(sudo losetup -fP --show $IMG)
+          sudo mkfs.fat -F 32 ${LOOPDEV}p1
+          sudo mkdir -p /mnt/esp
+          sudo mount -t vfat ${LOOPDEV}p1 /mnt/esp
+          sudo mkdir -p /mnt/esp/EFI/BOOT /mnt/esp/boot/kernel /mnt/esp/boot/modules /mnt/esp/efi/freebsd /mnt/esp/mycelius /mnt/esp/boot/lua
 
-          mcopy -i /tmp/esp.fat /tmp/freebsd/boot/loader.efi ::EFI/BOOT/BOOTAA64.EFI
-          mcopy -i /tmp/esp.fat /tmp/freebsd/boot/kernel/kernel ::boot/kernel/kernel
+          sudo cp /tmp/freebsd/boot/loader.efi /mnt/esp/EFI/BOOT/BOOTAA64.EFI
+          sudo cp /tmp/freebsd/boot/kernel/kernel /mnt/esp/boot/kernel/kernel
 
           # Extract GPT geom module from kernel.txz so the loader can parse GPT partitions
           tar -xf /tmp/freebsd-cache/kernel.txz -C /tmp/freebsd ./boot/kernel/geom_part_gpt.ko
-          mcopy -i /tmp/esp.fat /tmp/freebsd/boot/kernel/geom_part_gpt.ko ::boot/modules/geom_part_gpt.ko
+          sudo cp /tmp/freebsd/boot/kernel/geom_part_gpt.ko /mnt/esp/boot/modules/geom_part_gpt.ko
 
           # Boot config: point rootfs at vtblk0p2 (partition 2 of our disk) and load GPT geom
-          mmd -i /tmp/esp.fat ::efi
-          mmd -i /tmp/esp.fat ::efi/freebsd
           cat > /tmp/loader.env << 'EOF'
           vfs.root.mountfrom="ufs:/dev/vtblk0p2"
           geom_part_gpt_load="YES"
           autoboot_delay="2"
           EOF
-          mcopy -i /tmp/esp.fat /tmp/loader.env ::efi/freebsd/loader.env
+          sudo cp /tmp/loader.env /mnt/esp/efi/freebsd/loader.env
 
           # Lua boot scripts (no more "cannot open loader.lua" error)
           if [ -d /tmp/freebsd/boot/lua ]; then
-            mmd -i /tmp/esp.fat ::boot/lua
-            mcopy -s -i /tmp/esp.fat /tmp/freebsd/boot/lua/* ::boot/lua/ || true
+            sudo cp -r /tmp/freebsd/boot/lua/* /mnt/esp/boot/lua/ || true
           fi
 
           # Our daemons on the ESP too (accessible from loader shell)
-          mcopy -i /tmp/esp.fat /tmp/backboardd.aarch64 ::mycelius/backboardd
-          mcopy -i /tmp/esp.fat /tmp/launchpad.aarch64  ::mycelius/launchpad
-          mcopy -i /tmp/esp.fat /tmp/lp_frame.ppm        ::mycelius/frame.ppm
+          sudo cp /tmp/backboardd.aarch64 /mnt/esp/mycelius/backboardd
+          sudo cp /tmp/launchpad.aarch64  /mnt/esp/mycelius/launchpad
+          sudo cp /tmp/lp_frame.ppm        /mnt/esp/mycelius/frame.ppm
 
-          # Write ESP into partition 1
-          ESP_START=$(parted $IMG --script unit s print | awk '/^ 1 /{print $2}' | tr -d s)
-          dd if=/tmp/esp.fat of=$IMG bs=512 seek=$ESP_START conv=notrunc
+          sudo umount /mnt/esp
+          sudo losetup -d ${LOOPDEV}
           echo "ESP written."
 
           # ── Rootfs (Partition 2): inject daemons into official FreeBSD UFS2 ──
