@@ -204,22 +204,15 @@ jobs:
           tar -xf /tmp/freebsd-cache/kernel.txz -C /tmp/freebsd ./boot/kernel/geom_part_gpt.ko
           mcopy -i /tmp/esp.fat /tmp/freebsd/boot/kernel/geom_part_gpt.ko ::boot/modules/geom_part_gpt.ko
 
-          # Boot config: point rootfs at vtbd0p2 (partition 2 of our disk) and load GPT geom
-          cat > /tmp/loader.conf << 'EOF'
-          autoboot_delay="2"
-          vfs.root.mountfrom="ufs:/dev/vtbd0p2"
-          bootfile="/boot/kernel/kernel"
+          # Boot config: point rootfs at vtblk0p2 (partition 2 of our disk) and load GPT geom
+          mmd -i /tmp/esp.fat ::efi
+          mmd -i /tmp/esp.fat ::efi/freebsd
+          cat > /tmp/loader.env << 'EOF'
+          vfs.root.mountfrom="ufs:/dev/vtblk0p2"
           geom_part_gpt_load="YES"
+          autoboot_delay="2"
           EOF
-          mcopy -i /tmp/esp.fat /tmp/loader.conf ::boot/loader.conf
-
-          # Loader script: show loading text, load GPT geom, then boot automatically
-          cat > /tmp/loader.rc << 'LDR'
-          echo "Loading mycelius..."
-          load geom_part_gpt
-          boot
-          LDR
-          mcopy -i /tmp/esp.fat /tmp/loader.rc ::boot/loader.rc
+          mcopy -i /tmp/esp.fat /tmp/loader.env ::efi/freebsd/loader.env
 
           # Lua boot scripts (no more "cannot open loader.lua" error)
           if [ -d /tmp/freebsd/boot/lua ]; then
