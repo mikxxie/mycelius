@@ -194,25 +194,31 @@ jobs:
           mmd -i /tmp/esp.fat ::EFI/BOOT
           mmd -i /tmp/esp.fat ::boot
           mmd -i /tmp/esp.fat ::boot/kernel
+          mmd -i /tmp/esp.fat ::boot/modules
           mmd -i /tmp/esp.fat ::mycelius
 
           mcopy -i /tmp/esp.fat /tmp/freebsd/boot/loader.efi ::EFI/BOOT/BOOTAA64.EFI
           mcopy -i /tmp/esp.fat /tmp/freebsd/boot/kernel/kernel ::boot/kernel/kernel
 
+          # Extract GPT geom module from kernel.txz so the loader can parse GPT partitions
+          tar -xf /tmp/freebsd-cache/kernel.txz -C /tmp/freebsd ./boot/kernel/geom_part_gpt.ko
+          mcopy -i /tmp/esp.fat /tmp/freebsd/boot/kernel/geom_part_gpt.ko ::boot/modules/geom_part_gpt.ko
+
           # Boot config: point rootfs at vtblk0p2 (partition 2 of our disk) and load GPT geom
           cat > /tmp/loader.conf << 'EOF'
-          autoboot_delay="1"
+          autoboot_delay="0"
           vfs.root.mountfrom="ufs:/dev/vtblk0p2"
           bootfile="/boot/kernel/kernel"
           geom_part_gpt_load="YES"
           EOF
           mcopy -i /tmp/esp.fat /tmp/loader.conf ::boot/loader.conf
 
-          # Loader script: show loading spinner, then boot automatically
+          # Loader script: show loading text, load GPT geom, then boot automatically
           cat > /tmp/loader.rc << 'LDR'
-          # mycelius boot — loading spinner then boot
           echo "Loading mycelius..."
-          echo ""
+          load geom_part_gpt
+          set vfs.root.mountfrom="ufs:/dev/vtblk0p2"
+          set autoboot_delay=0
           load
           boot
           LDR
