@@ -24,6 +24,7 @@ jobs:
           sudo apt-get install -y -qq \
             build-essential ccache \
             aarch64-linux-gnu-gcc \
+            cpio \
             curl xz-utils
 
       - name: Cache ccache
@@ -42,24 +43,20 @@ jobs:
           CC="ccache cc" make -C usr.sbin/launchpad
           file usr.sbin/backboardd/backboardd usr.sbin/launchpad/launchpad
 
-      - name: Cross-compile backboardd + launchpad → aarch64-linux-gnu
+      - name: Build QEMU initramfs image
         run: |
-          SYSROOT=""
-          INCS="-Iusr.sbin/include"
-          echo "Cross-compiling backboardd..."
-          aarch64-linux-gnu-gcc \
-            ${INCS} \
-            -O2 -Wall -std=c11 \
-            usr.sbin/backboardd/backboardd.c \
-            -o /tmp/backboardd.aarch64
-          echo "Cross-compiling launchpad..."
-          aarch64-linux-gnu-gcc \
-            ${INCS} \
-            -O2 -Wall -std=c11 \
-            usr.sbin/launchpad/launchpad.c usr.sbin/launchpad/render.c \
-            -o /tmp/launchpad.aarch64
-          echo "Built:"
-          file /tmp/backboardd.aarch64 /tmp/launchpad.aarch64
+          sh tools/build-qemu-img.sh /tmp
+          ls -lh /tmp/mycelius-initramfs.gz /tmp/mycelius-kernel 2>/dev/null || true
+
+      - name: Cache QEMU image (initramfs + kernel)
+        uses: actions/cache@v4
+        with:
+          path: |
+            /tmp/mycelius-initramfs.gz
+            /tmp/mycelius-kernel
+          key: mycelius-qemu-img-${{ github.sha }}
+          restore-keys: |
+            mycelius-qemu-img-
 
       - name: Smoke test (synth input → launchpad render → PPM)
         run: |
@@ -82,6 +79,8 @@ jobs:
         with:
           name: mycelius-build
           path: |
+            /tmp/mycelius-initramfs.gz
+            /tmp/mycelius-kernel
             /tmp/backboardd.aarch64
             /tmp/launchpad.aarch64
             usr.sbin/backboardd/backboardd
