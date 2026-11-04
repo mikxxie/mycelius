@@ -16,6 +16,9 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/resource.h>
+#include <sys/mman.h>
+#include <sys/ioctl.h>
+#include <linux/fb.h>
 
 #ifndef MSG_DONTWAIT
 #define MSG_DONTWAIT 0x40
@@ -23,6 +26,64 @@
 
 #include "lp_proto.h"
 #include "render.h"
+
+static int g_fb_fd = -1;
+static uint8_t *g_fb_mem = NULL;
+static size_t g_fb_size = 0;
+static int g_fb_w = 0, g_fb_h = 0;
+static int g_fb_bpp = 0;
+
+static void fb_open(void) {
+    g_fb_fd = open("/dev/fb0", O_RDWR);
+    if (g_fb_fd < 0) {
+        fprintf(stderr, "launchpad: cannot open /dev/fb0: %s (framebuffer disabled)\n", strerror(errno));
+        return;
+    }
+    struct fb_var_screeninfo vinfo;
+    if (ioctl(g_fb_fd, FBIOGET_VSCREENINFO, &vinfo) < 0) {
+        fprintf(stderr, "launchpad: FBIOGET_VSCREENINFO failed: %s\n", strerror(errno));
+        close(g_fb_fd); g_fb_fd = -1;
+        return;
+    }
+    g_fb_w = vinfo.xres;
+    g_fb_h = vinfo.yres;
+    g_fb_bpp = vinfo.bits_per_pixel;
+    struct fb_fix_screeninfo finfo;
+    if (ioctl(g_fb_fd, FBIOGET_FSCREENINFO, &finfo) < 0) {
+        fprintf(stderr, "launchpad: FBIOGET_FSCREENINFO failed: %s\n", strerror(errno));
+        close(g_fb_fd); g_fb_fd = -1;
+        return;
+    }
+    g_fb_size = finfo.smem_len;
+    g_fb_mem = mmap(NULL, g_fb_size, PROT_READ | PROT_WRITE, MAP_SHARED, g_fb_fd, 0);
+    if (g_fb_mem == MAP_FAILED) {
+        fprintf(stderr, "launchpad: mmap framebuffer failed: %s\n", strerror(errno));
+        close(g_fb_fd); g_fb_fd = -1;
+        g_fb_mem = NULL;
+        return;
+    }
+    fprintf(stderr, "launchpad: framebuffer %dx%d @ %d bpp\n", g_fb_w, g_fb_h, g_fb_bpp);
+}
+
+static void fb_close(void) {
+    if (g_fb_mem) { munmap(g_fb_mem, g_fb_size); g_fb_mem = NULL; }
+    if (g_fb_fd >= 0) { close(g_fb_fd); g_fb_fd = -1; }
+}
+
+static void fb_flush(const struct render *r) {
+    if (!g_fb_mem) return;
+    int fw = g_fb_w > r->w ? r->w : g_fb_w;
+    int fh = g_fb_h > r->h ? r->h : g_fb_h;
+    for (int y = 0; y < fh; y++) {
+        uint8_t *dst = g_fb_mem + (size_t)y * g_fb_w * (g_fb_bpp / 8);
+        const uint8_t *src = r->pix + (size_t)y * r->stride;
+        for (int x = 0; x < fw; x++) {
+            dst[x * 3 + 0] = src[x * 3 + 0]; /* R */
+            dst[x * 3 + 1] = src[x * 3 + 1]; /* G */
+            dst[x * 3 + 2] = src[x * 3 + 2]; /* B */
+        }
+    }
+}
 
 static volatile sig_atomic_t g_running = 1;
 
@@ -206,6 +267,7 @@ int main(int argc, char **argv) {
     }
 
     set_high_priority();
+    fb_open();
 
     int bb_fd = connect_unix(bb_sock);
     if (bb_fd < 0) {
@@ -280,6 +342,7 @@ int main(int argc, char **argv) {
             (uint64_t)LP_VSYNC_MS * 1000000ULL) {
             last_frame = now;
             compose(&r, frame_w, frame_h);
+            fb_flush(&r);
             if (render_write_ppm(&r, out_ppm) != 0) {
                 fprintf(stderr, "launchpad: cannot write %s\n", out_ppm);
             }
@@ -287,6 +350,7 @@ int main(int argc, char **argv) {
     }
 
     render_fini(&r);
+    fb_close();
     close(bb_fd);
     fprintf(stderr, "launchpad: exiting\n");
     return 0;

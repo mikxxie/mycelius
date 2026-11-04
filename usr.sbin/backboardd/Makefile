@@ -37,18 +37,15 @@ cross: $(SRCS)
 	file $(PROG) | grep -q aarch64
 
 # Build QEMU boot image (initramfs + kernel) and launch QEMU.
-# Prerequisites: an aarch64 Linux kernel at /tmp/mycelius-kernel
-#   (e.g. from kernel.org or your distro's arm64 kernel package)
+# Auto-downloads an aarch64 kernel if missing.
 qemu: cross
 	@mkdir -p $(BUILD_DIR)
 	sh $(TOOLS_DIR)/build-qemu-img.sh $(BUILD_DIR)
 	@if [ ! -f $(KERNEL_OUT) ]; then \
 		echo ""; \
 		echo "ERROR: No kernel found at $(KERNEL_OUT)"; \
-		echo "  Download an aarch64 Linux kernel, e.g.:"; \
-		echo "    curl -L -o $(KERNEL_OUT) \\"; \
-		echo "      https://kernel.ubuntu.com/~kernel-ppa/mainline/v6.6/current/arm64/linux-image-unsigned-6.6.*-generic_*_arm64.deb"; \
-		echo "  then extract /boot/vmlinuz-* to $(KERNEL_OUT)"; \
+		echo "  Please download an aarch64 Linux kernel and place it at:"; \
+		echo "    $(KERNEL_OUT)"; \
 		echo ""; \
 		exit 1; \
 	fi
@@ -57,10 +54,11 @@ qemu: cross
 		-cpu cortex-a72 \
 		-m 2G \
 		-smp 2 \
+		-device virtio-gpu-pci \
+		-display gtk \
 		-kernel $(KERNEL_OUT) \
 		-initrd $(INITRAMFS_OUT) \
-		-append "console=ttyAMA0 earlyprintk=ttyAMA0 root=/dev/vda2 rw init=/init" \
-		-display none \
+		-append "console=ttyAMA0 earlyprintk=ttyAMA0 init=/init" \
 		-serial stdio \
 		-no-reboot
 

@@ -1,8 +1,6 @@
 #!/bin/sh
-# build-qemu-img.sh — build initramfs + download kernel for QEMU aarch64 virt
-# Output: /tmp/mycelius-initramfs.gz and /tmp/mycelius-kernel
-#
-# Usage: ./build-qemu-img.sh [output-dir]
+# build-qemu-img.sh — build a bootable initramfs + download kernel for QEMU aarch64 virt
+# Output: OUTDIR/mycelius-initramfs.gz and OUTDIR/mycelius-kernel
 set -eu
 
 OUTDIR="${1:-/tmp}"
@@ -15,30 +13,55 @@ BUILD_ROOT="$(mktemp -d)"
 cleanup() { rm -rf "$BUILD_ROOT"; }
 trap cleanup EXIT
 
+INITRAMFS_OUT="/tmp/mycelius-initramfs.gz"
+KERNEL_OUT="/tmp/mycelius-kernel"
+
 echo "==> Building mycelius daemons (aarch64-linux-gnu, static)"
 make -C "$XNU_ROOT/usr.sbin/backboardd" CC=aarch64-linux-gnu-gcc \
     CFLAGS="-O2 -Wall -std=c11 -I../include -static" >/dev/null 2>&1
 make -C "$XNU_ROOT/usr.sbin/launchpad" CC=aarch64-linux-gnu-gcc \
     CFLAGS="-O2 -Wall -std=c11 -I../include -static" >/dev/null 2>&1
 
+echo "==> Compiling static init (aarch64-linux-gnu)"
+aarch64-linux-gnu-gcc -O2 -Wall -std=c11 -static \
+    -o "$XNU_ROOT/rootfs/init" "$XNU_ROOT/tools/init.c"
+
 echo "==> Staging rootfs for initramfs"
 rm -rf "$BUILD_ROOT/rootfs"
 mkdir -p "$BUILD_ROOT/rootfs"
 cp -a "$ROOTFS_DIR/." "$BUILD_ROOT/rootfs/"
-chmod +x "$BUILD_ROOT/rootfs/init"
 cp "$XNU_ROOT/usr.sbin/backboardd/backboardd" "$BUILD_ROOT/rootfs/sbin/backboardd"
 cp "$XNU_ROOT/usr.sbin/launchpad/launchpad" "$BUILD_ROOT/rootfs/sbin/launchpad"
-chmod 0755 "$BUILD_ROOT/rootfs/sbin/backboardd" "$BUILD_ROOT/rootfs/sbin/launchpad"
+chmod 0755 "$BUILD_ROOT/rootfs/sbin/backboardd" \
+           "$BUILD_ROOT/rootfs/sbin/launchpad" \
+           "$BUILD_ROOT/rootfs/init"
 
 echo "==> Creating initramfs"
 cd "$BUILD_ROOT/rootfs"
-find . -print0 | cpio --null -o -H newc | gzip > "$OUTDIR/mycelius-initramfs.gz"
+find . -mindepth 1 -printf '%P\0' | cpio --null -o -H newc | gzip > "$INITRAMFS_OUT"
 
-echo "==> Checking for kernel at $OUTDIR/mycelius-kernel"
-if [ ! -f "$OUTDIR/mycelius-kernel" ]; then
-    echo "   (no kernel cached — QEMU will need -kernel pointed at an aarch64 vmlinux)"
+echo "==> Ensuring kernel at $KERNEL_OUT"
+if [ ! -f "$KERNEL_OUT" ]; then
+    echo "   Downloading aarch64 Linux kernel for QEMU virt..."
+    KERNEL_DEB="https://kernel.ubuntu.com/~kernel-ppa/mainline/daily/current/arm64/linux-image-unsigned-7.3.0-070300daily20261101-generic_7.3.0-070300daily202611010203_arm64.deb"
+    if curl -f -sSL --max-time 120 -o /tmp/mycelius-kernel.deb "$KERNEL_DEB" 2>/dev/null; then
+        echo "   Extracting kernel from deb..."
+        mkdir -p /tmp/kernel-extract
+        dpkg-deb -x /tmp/mycelius-kernel.deb /tmp/kernel-extract 2>/dev/null || true
+        if [ -f /tmp/kernel-extract/boot/vmlinuz-* ]; then
+            cp /tmp/kernel-extract/boot/vmlinuz-* "$KERNEL_OUT"
+        elif [ -f /tmp/kernel-extract/boot/vmlinux-* ]; then
+            cp /tmp/kernel-extract/boot/vmlinux-* "$KERNEL_OUT"
+        fi
+        rm -rf /tmp/kernel-extract /tmp/mycelius-kernel.deb
+    fi
+fi
+
+if [ ! -f "$KERNEL_OUT" ]; then
+    echo "   WARNING: No kernel downloaded. Place an aarch64 kernel at:"
+    echo "     $KERNEL_OUT"
     touch "$OUTDIR/NO_KERNEL"
 fi
 
 echo "==> Done:"
-ls -lh "$OUTDIR/mycelius-initramfs.gz" "$OUTDIR/mycelius-kernel" 2>/dev/null || true
+ls -lh "$INITRAMFS_OUT" "$KERNEL_OUT" 2>/dev/null || true
