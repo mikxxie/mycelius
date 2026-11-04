@@ -74,8 +74,8 @@ jobs:
           fi
           cd /tmp/linux
           git pull --depth 1 || true
-          make ARCH=arm64 defconfig
-          make ARCH=arm64 -j$(nproc) Image
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) Image
           cp arch/arm64/boot/Image /tmp/mycelius-kernel
           ls -lh /tmp/mycelius-kernel
 
