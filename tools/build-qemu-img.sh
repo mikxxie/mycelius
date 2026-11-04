@@ -17,10 +17,8 @@ INITRAMFS_OUT="/tmp/mycelius-initramfs.gz"
 KERNEL_OUT="/tmp/mycelius-kernel"
 
 echo "==> Building mycelius daemons (aarch64-linux-gnu, static)"
-make -C "$XNU_ROOT/usr.sbin/backboardd" CC=aarch64-linux-gnu-gcc \
-    CFLAGS="-O2 -Wall -std=c11 -I../include -static" >/dev/null 2>&1
-make -C "$XNU_ROOT/usr.sbin/launchpad" CC=aarch64-linux-gnu-gcc \
-    CFLAGS="-O2 -Wall -std=c11 -I../include -static" >/dev/null 2>&1
+make -C "$XNU_ROOT/usr.sbin/backboardd" cross CC=aarch64-linux-gnu-gcc >/dev/null 2>&1
+make -C "$XNU_ROOT/usr.sbin/launchpad" cross CC=aarch64-linux-gnu-gcc >/dev/null 2>&1
 
 echo "==> Compiling static init (aarch64-linux-gnu)"
 aarch64-linux-gnu-gcc -O2 -Wall -std=c11 -static \

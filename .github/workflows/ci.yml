@@ -13,7 +13,7 @@ concurrency:
 jobs:
   build-test:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Checkout mycelius
         uses: actions/checkout@v4
@@ -25,15 +25,39 @@ jobs:
             build-essential ccache \
             aarch64-linux-gnu-gcc \
             cpio \
-            curl xz-utils
+            curl xz-utils dpkg-dev
 
-      - name: Cache ccache
+      - name: Cache ccache (native)
         uses: actions/cache@v4
         with:
           path: ~/.ccache
-          key: ${{ runner.os }}-ccache-${{ github.sha }}
+          key: ${{ runner.os }}-ccache-native-${{ github.sha }}
           restore-keys: |
-            ${{ runner.os }}-ccache-
+            ${{ runner.os }}-ccache-native-
+
+      - name: Cache ccache (cross)
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/.ccache-aarch64
+          key: ${{ runner.os }}-ccache-cross-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-cross-
+
+      - name: Cache Linux kernel (aarch64)
+        uses: actions/cache@v4
+        with:
+          path: /tmp/mycelius-kernel
+          key: ${{ runner.os }}-kernel-aarch64-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-kernel-aarch64-
+
+      - name: Cache QEMU initramfs image
+        uses: actions/cache@v4
+        with:
+          path: /tmp/mycelius-initramfs.gz
+          key: ${{ runner.os }}-initramfs-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-initramfs-
 
       - name: Build backboardd + launchpad (native Linux)
         env:
@@ -43,20 +67,12 @@ jobs:
           CC="ccache cc" make -C usr.sbin/launchpad
           file usr.sbin/backboardd/backboardd usr.sbin/launchpad/launchpad
 
-      - name: Build QEMU initramfs image
+      - name: Build QEMU initramfs image (cross-compiled aarch64)
+        env:
+          CCACHE_DIR: /home/runner/.ccache-aarch64
         run: |
-          sh tools/build-qemu-img.sh /tmp
+          CCACHE_DIR=/home/runner/.ccache-aarch64 sh tools/build-qemu-img.sh /tmp
           ls -lh /tmp/mycelius-initramfs.gz /tmp/mycelius-kernel 2>/dev/null || true
-
-      - name: Cache QEMU image (initramfs + kernel)
-        uses: actions/cache@v4
-        with:
-          path: |
-            /tmp/mycelius-initramfs.gz
-            /tmp/mycelius-kernel
-          key: mycelius-qemu-img-${{ github.sha }}
-          restore-keys: |
-            mycelius-qemu-img-
 
       - name: Smoke test (synth input → launchpad render → PPM)
         run: |
@@ -81,8 +97,6 @@ jobs:
           path: |
             /tmp/mycelius-initramfs.gz
             /tmp/mycelius-kernel
-            /tmp/backboardd.aarch64
-            /tmp/launchpad.aarch64
             usr.sbin/backboardd/backboardd
             usr.sbin/launchpad/launchpad
             /tmp/lp_frame.ppm
