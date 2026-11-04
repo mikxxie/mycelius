@@ -23,6 +23,7 @@ make -C "$XNU_ROOT/usr.sbin/launchpad" CC=aarch64-linux-gnu-gcc \
     CFLAGS="-O2 -Wall -std=c11 -I../include -static" >/dev/null 2>&1
 
 echo "==> Compiling static init (aarch64-linux-gnu)"
+mkdir -p "$XNU_ROOT/rootfs"
 aarch64-linux-gnu-gcc -O2 -Wall -std=c11 -static \
     -o "$XNU_ROOT/rootfs/init" "$XNU_ROOT/tools/init.c"
 
