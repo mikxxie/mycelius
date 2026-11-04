@@ -13,7 +13,7 @@ concurrency:
 jobs:
   build-test:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - name: Checkout mycelius
         uses: actions/checkout@v4
@@ -24,8 +24,8 @@ jobs:
           sudo apt-get install -y -qq \
             build-essential ccache \
             aarch64-linux-gnu-gcc \
-            cpio \
-            curl xz-utils dpkg-dev
+            cpio curl xz-utils \
+            libncurses-dev bc flex bison libssl-dev libelf-dev dwarves
 
       - name: Cache ccache (native)
         uses: actions/cache@v4
@@ -66,6 +66,18 @@ jobs:
           CC="ccache cc" make -C usr.sbin/backboardd
           CC="ccache cc" make -C usr.sbin/launchpad
           file usr.sbin/backboardd/backboardd usr.sbin/launchpad/launchpad
+
+      - name: Clone + build Linux kernel (aarch64, from source)
+        run: |
+          if [ ! -d /tmp/linux ]; then
+            git clone --depth 1 https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git /tmp/linux
+          fi
+          cd /tmp/linux
+          git pull --depth 1 || true
+          make ARCH=arm64 defconfig >/dev/null 2>&1
+          make ARCH=arm64 -j$(nproc) Image >/dev/null 2>&1
+          cp arch/arm64/boot/Image /tmp/mycelius-kernel
+          ls -lh /tmp/mycelius-kernel
 
       - name: Build QEMU initramfs image (cross-compiled aarch64)
         env:

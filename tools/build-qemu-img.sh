@@ -1,5 +1,5 @@
 #!/bin/sh
-# build-qemu-img.sh — build a bootable initramfs + download kernel for QEMU aarch64 virt
+# build-qemu-img.sh — build initramfs + compile Linux kernel for QEMU aarch64 virt
 # Output: OUTDIR/mycelius-initramfs.gz and OUTDIR/mycelius-kernel
 set -eu
 
@@ -17,8 +17,10 @@ INITRAMFS_OUT="/tmp/mycelius-initramfs.gz"
 KERNEL_OUT="/tmp/mycelius-kernel"
 
 echo "==> Building mycelius daemons (aarch64-linux-gnu, static)"
-make -C "$XNU_ROOT/usr.sbin/backboardd" cross CC=aarch64-linux-gnu-gcc >/dev/null 2>&1
-make -C "$XNU_ROOT/usr.sbin/launchpad" cross CC=aarch64-linux-gnu-gcc >/dev/null 2>&1
+make -C "$XNU_ROOT/usr.sbin/backboardd" CC=aarch64-linux-gnu-gcc \
+    CFLAGS="-O2 -Wall -std=c11 -I../include -static" >/dev/null 2>&1
+make -C "$XNU_ROOT/usr.sbin/launchpad" CC=aarch64-linux-gnu-gcc \
+    CFLAGS="-O2 -Wall -std=c11 -I../include -static" >/dev/null 2>&1
 
 echo "==> Compiling static init (aarch64-linux-gnu)"
 aarch64-linux-gnu-gcc -O2 -Wall -std=c11 -static \
@@ -40,23 +42,21 @@ find . -mindepth 1 -printf '%P\0' | cpio --null -o -H newc | gzip > "$INITRAMFS_
 
 echo "==> Ensuring kernel at $KERNEL_OUT"
 if [ ! -f "$KERNEL_OUT" ]; then
-    echo "   Downloading aarch64 Linux kernel for QEMU virt..."
-    KERNEL_DEB="https://kernel.ubuntu.com/~kernel-ppa/mainline/daily/current/arm64/linux-image-unsigned-7.3.0-070300daily20261101-generic_7.3.0-070300daily202611010203_arm64.deb"
-    if curl -f -sSL --max-time 120 -o /tmp/mycelius-kernel.deb "$KERNEL_DEB" 2>/dev/null; then
-        echo "   Extracting kernel from deb..."
-        mkdir -p /tmp/kernel-extract
-        dpkg-deb -x /tmp/mycelius-kernel.deb /tmp/kernel-extract 2>/dev/null || true
-        if [ -f /tmp/kernel-extract/boot/vmlinuz-* ]; then
-            cp /tmp/kernel-extract/boot/vmlinuz-* "$KERNEL_OUT"
-        elif [ -f /tmp/kernel-extract/boot/vmlinux-* ]; then
-            cp /tmp/kernel-extract/boot/vmlinux-* "$KERNEL_OUT"
-        fi
-        rm -rf /tmp/kernel-extract /tmp/mycelius-kernel.deb
+    echo "   Downloading/building aarch64 Linux kernel for QEMU virt..."
+    KERNEL_DIR="/tmp/linux"
+    if [ ! -d "$KERNEL_DIR/.git" ]; then
+        rm -rf "$KERNEL_DIR"
+        git clone --depth 1 https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git "$KERNEL_DIR"
     fi
+    cd "$KERNEL_DIR"
+    git pull --depth 1 || true
+    make ARCH=arm64 defconfig >/dev/null 2>&1
+    make ARCH=arm64 -j$(nproc) Image >/dev/null 2>&1
+    cp arch/arm64/boot/Image "$KERNEL_OUT"
 fi
 
 if [ ! -f "$KERNEL_OUT" ]; then
-    echo "   WARNING: No kernel downloaded. Place an aarch64 kernel at:"
+    echo "   ERROR: Could not build kernel. Place an aarch64 kernel at:"
     echo "     $KERNEL_OUT"
     touch "$OUTDIR/NO_KERNEL"
 fi
