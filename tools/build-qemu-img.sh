@@ -28,7 +28,7 @@ aarch64-linux-gnu-gcc -O2 -Wall -std=c11 -static \
 
 echo "==> Staging rootfs for initramfs"
 rm -rf "$BUILD_ROOT/rootfs"
-mkdir -p "$BUILD_ROOT/rootfs"
+mkdir -p "$BUILD_ROOT/rootfs/sbin" "$BUILD_ROOT/rootfs/proc" "$BUILD_ROOT/rootfs/sys" "$BUILD_ROOT/rootfs/dev" "$BUILD_ROOT/rootfs/etc" "$BUILD_ROOT/rootfs/tmp" "$BUILD_ROOT/rootfs/var/log" "$BUILD_ROOT/rootfs/var/run"
 cp -a "$ROOTFS_DIR/." "$BUILD_ROOT/rootfs/"
 cp "$XNU_ROOT/usr.sbin/backboardd/backboardd" "$BUILD_ROOT/rootfs/sbin/backboardd"
 cp "$XNU_ROOT/usr.sbin/launchpad/launchpad" "$BUILD_ROOT/rootfs/sbin/launchpad"
