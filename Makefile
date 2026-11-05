@@ -33,16 +33,11 @@ image: daemons
 	cp linux/drivers/mycelius/launchpad build/rootfs/sbin/launchpad
 	cp linux/drivers/mycelius/init build/rootfs/init
 	chmod +x build/rootfs/init build/rootfs/sbin/backboardd build/rootfs/sbin/launchpad
-	cat > build/rootfs/etc/fstab << 'FSTAB'
-/dev/vda / ext2 defaults 0 1
-proc /proc proc defaults 0 0
-sysfs /sys sysfs defaults 0 0
-devtmpfs /dev devtmpfs defaults 0 0
-FSTAB
+	printf '/dev/vda / ext2 defaults 0 1\nproc /proc proc defaults 0 0\nsysfs /sys sysfs defaults 0 0\ndevtmpfs /dev devtmpfs defaults 0 0\n' > build/rootfs/etc/fstab
 	cd build/rootfs && find . -mindepth 1 -printf '%P\0' | cpio --null -o -H newc | gzip > $(INITRAMFS)
 
 # ---------- Run QEMU with GUI ----------
-run: $(INITRAMFS) $(KERNEL_IMG)
+run: image kernel
 	qemu-system-aarch64 \
 		-M virt \
 		-cpu cortex-a72 \
@@ -50,6 +45,8 @@ run: $(INITRAMFS) $(KERNEL_IMG)
 		-smp 2 \
 		-device virtio-gpu-pci \
 		-display gtk \
+		-drive file=mycelius-arm64.img,format=raw,if=none,id=hd0 \
+		-device virtio-blk-device,drive=hd0 \
 		-kernel $(KERNEL_IMG) \
 		-initrd $(INITRAMFS) \
 		-append "console=ttyAMA0 earlyprintk=ttyAMA0 root=/dev/vda rw init=/init" \
