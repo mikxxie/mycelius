@@ -42,13 +42,7 @@ FSTAB
 	cd build/rootfs && find . -mindepth 1 -printf '%P\0' | cpio --null -o -H newc | gzip > $(INITRAMFS)
 
 # ---------- Run QEMU with GUI ----------
-run: $(INITRAMFS)
-	@if [ ! -f $(KERNEL_IMG) ]; then \
-		echo "Error: kernel not found at $(KERNEL_IMG)"; \
-		echo "  Run 'make kernel' first (builds from source, ~10 min)"; \
-		echo "  Or CI builds it automatically on push"; \
-		exit 1; \
-	fi
+run: $(INITRAMFS) $(KERNEL_IMG)
 	qemu-system-aarch64 \
 		-M virt \
 		-cpu cortex-a72 \
