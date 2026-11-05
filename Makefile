@@ -31,7 +31,7 @@ image: daemons
 	         build/rootfs/etc build/rootfs/tmp build/rootfs/var/log build/rootfs/var/run
 	cp linux/drivers/mycelius/backboardd build/rootfs/sbin/backboardd
 	cp linux/drivers/mycelius/launchpad build/rootfs/sbin/launchpad
-	cp linux/drivers/mycelius/init build/rootfs/init
+	cp linux/drivers/mycelius/init.c build/rootfs/init
 	chmod +x build/rootfs/init build/rootfs/sbin/backboardd build/rootfs/sbin/launchpad
 	printf '/dev/vda / ext2 defaults 0 1\nproc /proc proc defaults 0 0\nsysfs /sys sysfs defaults 0 0\ndevtmpfs /dev devtmpfs defaults 0 0\n' > build/rootfs/etc/fstab
 	cd build/rootfs && find . -mindepth 1 -printf '%P\0' | cpio --null -o -H newc | gzip > $(INITRAMFS)
