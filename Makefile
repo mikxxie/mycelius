@@ -1,6 +1,6 @@
 # mycelius - top-level build
 #
-#   make run      - Build everything and launch QEMU with GUI
+#   make run      - Build initramfs and launch QEMU with GUI
 #   make kernel   - Build Linux kernel (aarch64) from source
 #   make daemons  - Cross-compile backboardd + launchpad (static aarch64)
 #   make image    - Build initramfs with C init
@@ -15,7 +15,7 @@ INITRAMFS := build/mycelius-initramfs.gz
 
 all: kernel daemons image
 
-# ---------- Build Linux kernel from source (CI does this, local fallback) ----------
+# ---------- Build Linux kernel from source (aarch64) ----------
 kernel:
 	$(MAKE) -C linux ARCH=arm64 CROSS_COMPILE=$(CROSS_COMPILE) defconfig
 	$(MAKE) -C linux ARCH=arm64 CROSS_COMPILE=$(CROSS_COMPILE) -j$$(nproc) Image
@@ -28,16 +28,21 @@ daemons:
 image: daemons
 	rm -rf build/rootfs
 	mkdir -p build/rootfs/sbin build/rootfs/proc build/rootfs/sys build/rootfs/dev \
-	         build/rootfs/etc build/rootfs/tmp build/rootfs/var/log build/rootfs/var/run build
+	         build/rootfs/etc build/rootfs/tmp build/rootfs/var/log build/rootfs/var/run
 	cp linux/drivers/mycelius/backboardd build/rootfs/sbin/backboardd
 	cp linux/drivers/mycelius/launchpad build/rootfs/sbin/launchpad
 	$(CROSS_COMPILE)gcc -O2 -static -o build/rootfs/init tools/init.c
 	chmod +x build/rootfs/init build/rootfs/sbin/backboardd build/rootfs/sbin/launchpad
 	printf '/dev/vda / ext2 defaults 0 1\nproc /proc proc defaults 0 0\nsysfs /sys sysfs defaults 0 0\ndevtmpfs /dev devtmpfs defaults 0 0\n' > build/rootfs/etc/fstab
-	cd build/rootfs && find . -mindepth 1 -printf '%P\0' | cpio --null -o -H newc | gzip > ../$(INITRAMFS)
+	cd build/rootfs && find . -mindepth 1 -printf '%P\0' | cpio --null -o -H newc | gzip > ../../$(INITRAMFS)
 
 # ---------- Run QEMU with GUI ----------
-run: image kernel
+run: image
+	@if [ ! -f $(KERNEL_IMG) ]; then \
+		echo "Error: kernel not found at $(KERNEL_IMG)"; \
+		echo "  Run 'make kernel' first (builds from source)"; \
+		exit 1; \
+	fi
 	qemu-system-aarch64 \
 		-M virt \
 		-cpu cortex-a72 \
@@ -45,11 +50,9 @@ run: image kernel
 		-smp 2 \
 		-device virtio-gpu-pci \
 		-display gtk \
-		-drive file=mycelius-arm64.img,format=raw,if=none,id=hd0 \
-		-device virtio-blk-device,drive=hd0 \
 		-kernel $(KERNEL_IMG) \
 		-initrd $(INITRAMFS) \
-		-append "console=ttyAMA0 earlyprintk=ttyAMA0 root=/dev/vda rw init=/init" \
+		-append "console=ttyAMA0 earlyprintk=ttyAMA0 init=/init" \
 		-serial stdio \
 		-no-reboot
 
@@ -73,7 +76,7 @@ clean:
 
 help:
 	@echo "mycelius build system"
-	@echo "  make run      - Build everything and launch QEMU with GUI"
+	@echo "  make run      - Build initramfs and launch QEMU with GUI"
 	@echo "  make kernel   - Build Linux kernel (aarch64) from source"
 	@echo "  make daemons  - Cross-compile backboardd + launchpad (static)"
 	@echo "  make image    - Build initramfs"
