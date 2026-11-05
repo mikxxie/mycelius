@@ -1,0 +1,357 @@
+#define _POSIX_C_SOURCE 200809L
+#define _DEFAULT_SOURCE
+#define _GNU_SOURCE
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <errno.h>
+#include <time.h>
+#include <poll.h>
+#include <sched.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <sys/resource.h>
+#include <sys/mman.h>
+#include <sys/ioctl.h>
+#include <linux/fb.h>
+
+#ifndef MSG_DONTWAIT
+#define MSG_DONTWAIT 0x40
+#endif
+
+#include "lp_proto.h"
+#include "render.h"
+
+static int g_fb_fd = -1;
+static uint8_t *g_fb_mem = NULL;
+static size_t g_fb_size = 0;
+static int g_fb_w = 0, g_fb_h = 0;
+static int g_fb_bpp = 0;
+
+static void fb_open(void) {
+    g_fb_fd = open("/dev/fb0", O_RDWR);
+    if (g_fb_fd < 0) {
+        fprintf(stderr, "launchpad: cannot open /dev/fb0: %s (framebuffer disabled)\n", strerror(errno));
+        return;
+    }
+    struct fb_var_screeninfo vinfo;
+    if (ioctl(g_fb_fd, FBIOGET_VSCREENINFO, &vinfo) < 0) {
+        fprintf(stderr, "launchpad: FBIOGET_VSCREENINFO failed: %s\n", strerror(errno));
+        close(g_fb_fd); g_fb_fd = -1;
+        return;
+    }
+    g_fb_w = vinfo.xres;
+    g_fb_h = vinfo.yres;
+    g_fb_bpp = vinfo.bits_per_pixel;
+    struct fb_fix_screeninfo finfo;
+    if (ioctl(g_fb_fd, FBIOGET_FSCREENINFO, &finfo) < 0) {
+        fprintf(stderr, "launchpad: FBIOGET_FSCREENINFO failed: %s\n", strerror(errno));
+        close(g_fb_fd); g_fb_fd = -1;
+        return;
+    }
+    g_fb_size = finfo.smem_len;
+    g_fb_mem = mmap(NULL, g_fb_size, PROT_READ | PROT_WRITE, MAP_SHARED, g_fb_fd, 0);
+    if (g_fb_mem == MAP_FAILED) {
+        fprintf(stderr, "launchpad: mmap framebuffer failed: %s\n", strerror(errno));
+        close(g_fb_fd); g_fb_fd = -1;
+        g_fb_mem = NULL;
+        return;
+    }
+    fprintf(stderr, "launchpad: framebuffer %dx%d @ %d bpp\n", g_fb_w, g_fb_h, g_fb_bpp);
+}
+
+static void fb_close(void) {
+    if (g_fb_mem) { munmap(g_fb_mem, g_fb_size); g_fb_mem = NULL; }
+    if (g_fb_fd >= 0) { close(g_fb_fd); g_fb_fd = -1; }
+}
+
+static void fb_flush(const struct render *r) {
+    if (!g_fb_mem) return;
+    int fw = g_fb_w > r->w ? r->w : g_fb_w;
+    int fh = g_fb_h > r->h ? r->h : g_fb_h;
+    for (int y = 0; y < fh; y++) {
+        uint8_t *dst = g_fb_mem + (size_t)y * g_fb_w * (g_fb_bpp / 8);
+        const uint8_t *src = r->pix + (size_t)y * r->stride;
+        for (int x = 0; x < fw; x++) {
+            dst[x * 3 + 0] = src[x * 3 + 0]; /* R */
+            dst[x * 3 + 1] = src[x * 3 + 1]; /* G */
+            dst[x * 3 + 2] = src[x * 3 + 2]; /* B */
+        }
+    }
+}
+
+static volatile sig_atomic_t g_running = 1;
+
+static void handle_signal(int sig) {
+    (void)sig;
+    g_running = 0;
+}
+
+static void set_high_priority(void) {
+    /* Real-time, high priority: UI shell above backboardd/input */
+    struct sched_param sp;
+    memset(&sp, 0, sizeof(sp));
+    sp.sched_priority = 50;
+    if (sched_setscheduler(0, SCHED_FIFO, &sp) != 0) {
+        fprintf(stderr, "launchpad: sched_setscheduler failed: %s\n", strerror(errno));
+    }
+    /* Bind to core 0 (shared with backboardd on big.LITTLE). */
+    cpu_set_t mask;
+    CPU_ZERO(&mask);
+    CPU_SET(0, &mask);
+    if (sched_setaffinity(0, sizeof(mask), &mask) != 0) {
+        fprintf(stderr, "launchpad: sched_setaffinity failed: %s\n", strerror(errno));
+    }
+}
+
+static int connect_unix(const char *path) {
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+/* ---------- scene graph ---------- */
+
+#define MAX_TILES 32
+
+struct tile {
+    int32_t x, y, w, h;
+    uint32_t color;
+    uint32_t id;
+    const char *label;
+};
+
+static struct tile g_tiles[MAX_TILES];
+static int g_ntiles = 0;
+static int g_fg_app = -1;       /* index into g_tiles, -1 = home */
+static uint64_t g_last_touch = 0;
+
+static void scene_init_home(int frame_w, int frame_h) {
+    /* Android 4.4-style home grid: status bar + 4x4 app tiles. */
+    g_ntiles = 0;
+    int cols = 4, rows = 4;
+    int pad = 14;
+    int status_h = 44;
+    int tile_w = (frame_w - pad * (cols + 1)) / cols;
+    int tile_h = (frame_h - status_h - pad * (rows + 1)) / rows;
+    if (tile_w < 1) tile_w = 1;
+    if (tile_h < 1) tile_h = 1;
+
+    /* Colors: 0xRRGGBB (top byte unused/0) */
+    const uint32_t colors[] = {
+        0x4caf50, 0x2196f3, 0x9c27b0, 0xff9800,
+        0xf44336, 0x009688, 0x795548, 0x607d8b,
+        0xffeb3b, 0x9e9e9e, 0x8bc34a, 0x03a9f4,
+        0xe91e63, 0xffc107, 0x00bcd4, 0x7b1fa2,
+    };
+    const char *labels[] = {
+        "Phone","Mail","Safari","Music",
+        "Maps","Photos","Camera","Clock",
+        "Settings","App Store","iBooks","News",
+        "Weather","Stocks","Notes","Reminders",
+    };
+    int n = 0;
+    for (int r = 0; r < rows && n < MAX_TILES; r++) {
+        for (int c = 0; c < cols && n < MAX_TILES; c++) {
+            struct tile *t = &g_tiles[n];
+            t->x = pad + c * (tile_w + pad);
+            t->y = status_h + pad + r * (tile_h + pad);
+            t->w = tile_w;
+            t->h = tile_h;
+            t->color = colors[n % (sizeof(colors)/sizeof(colors[0]))];
+            t->id = (uint32_t)(n + 1);
+            t->label = labels[n % (sizeof(labels)/sizeof(labels[0]))];
+            n++;
+        }
+    }
+    g_ntiles = n;
+}
+
+static int hit_tile(int x, int y) {
+    for (int i = 0; i < g_ntiles; i++) {
+        struct tile *t = &g_tiles[i];
+        if (x >= t->x && x < t->x + t->w &&
+            y >= t->y && y < t->y + t->h) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/* ---------- compose ---------- */
+
+static void compose(struct render *r, int frame_w, int frame_h) {
+    /* Background: dark charcoal (0x1a1a1a = R:26 G:26 B:26) */
+    render_clear(r, 0x1a1a1a);
+
+    /* Status bar: solid black strip at top */
+    render_rect(r, 0, 0, frame_w, 44, 0x000000);
+    render_rect(r, 0, 43, frame_w, 1, 0x333333); /* bottom border */
+
+    /* Draw home tiles. */
+    for (int i = 0; i < g_ntiles; i++) {
+        struct tile *t = &g_tiles[i];
+        uint32_t color = t->color;
+        if (i == g_fg_app) {
+            /* Highlight selected tile. */
+            color = 0x555555;
+        }
+        render_rect(r, t->x, t->y, t->w, t->h, color);
+        /* Tile border: white top + left edge */
+        render_rect(r, t->x, t->y, t->w, 2, 0xffffff);
+        render_rect(r, t->x, t->y, 2, t->h, 0xffffff);
+    }
+
+    /* Foreground app: fullscreen overlay when launched. */
+    if (g_fg_app >= 0 && g_fg_app < g_ntiles) {
+        struct tile *t = &g_tiles[g_fg_app];
+        render_rect(r, 0, 44, frame_w, frame_h - 44, t->color);
+        /* App title bar */
+        render_rect(r, 0, 44, frame_w, 40, 0x000000);
+        render_rect(r, 0, 84, frame_w, 1, 0x222222);
+        /* Home indicator pill */
+        render_rect(r, frame_w / 2 - 24, frame_h - 16, 48, 8, 0xffffff);
+    }
+}
+
+static void forward_touch_to_app(int app_id, const struct bb_event *ev) {
+    /* v0: LaunchPad dictates the app; it forwards the touch to the
+     * foreground app's Mach-port-equivalent (Unix socket).
+     * The app is blind to other windows; it only receives its own events. */
+    fprintf(stderr,
+            "launchpad: touch type=%u app=%u x=%d y=%d (forwarded to app)\n",
+            ev->type, (uint32_t)app_id, ev->x, ev->y);
+
+    /* Wire-format stub: build an LP_MSG_TOUCH_FORWARD for the app socket. */
+    (void)app_id;
+}
+
+/* ---------- main ---------- */
+
+int main(int argc, char **argv) {
+    const char *bb_sock = LP_BACKBOARD_SOCK;
+    const char *out_ppm = "/tmp/launchpad_frame.ppm";
+    int frame_w = LP_FRAME_W;
+    int frame_h = LP_FRAME_H;
+
+    int c;
+    while ((c = getopt(argc, argv, "b:o:w:h:")) != -1) {
+        switch (c) {
+        case 'b': bb_sock = optarg; break;
+        case 'o': out_ppm = optarg; break;
+        case 'w': frame_w = atoi(optarg); break;
+        case 'h': frame_h = atoi(optarg); break;
+        default:
+            fprintf(stderr,
+                    "usage: launchpad [-b sock] [-o ppm] [-w W] [-h H]\n");
+            return 1;
+        }
+    }
+
+    if (frame_w <= 0 || frame_h <= 0) {
+        fprintf(stderr, "launchpad: invalid frame size\n");
+        return 1;
+    }
+
+    set_high_priority();
+    fb_open();
+
+    int bb_fd = connect_unix(bb_sock);
+    if (bb_fd < 0) {
+        fprintf(stderr, "launchpad: cannot connect to %s: %s\n",
+                bb_sock, strerror(errno));
+        return 1;
+    }
+    fprintf(stderr, "launchpad: connected to backboardd\n");
+
+    struct render r;
+    if (render_init(&r, frame_w, frame_h) != 0) {
+        fprintf(stderr, "launchpad: render init failed\n");
+        close(bb_fd);
+        return 1;
+    }
+
+    scene_init_home(frame_w, frame_h);
+
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = handle_signal;
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
+    sigaction(SIGPIPE, &(struct sigaction){ .sa_handler = SIG_IGN }, NULL);
+
+    uint64_t last_frame = 0;
+
+    fprintf(stderr, "launchpad: rendering %dx%d @ %dms vsync\n",
+            frame_w, frame_h, LP_VSYNC_MS);
+
+    while (g_running) {
+        struct pollfd pfd;
+        pfd.fd = bb_fd;
+        pfd.events = POLLIN;
+        int pr = poll(&pfd, 1, LP_VSYNC_MS);
+        if (pr < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+
+        /* Drain all pending input events. */
+        if (pfd.revents & POLLIN) {
+            struct bb_event bev;
+            while (recv(bb_fd, &bev, sizeof(bev), MSG_DONTWAIT) ==
+                   (ssize_t)sizeof(bev)) {
+                if (bev.type == BB_EV_TOUCH_DOWN ||
+                    bev.type == BB_EV_TOUCH_UP) {
+                    int idx = hit_tile(bev.x, bev.y);
+                    if (bev.type == BB_EV_TOUCH_DOWN && idx >= 0) {
+                        g_fg_app = idx;
+                        g_last_touch = bev.timestamp_ns;
+                        forward_touch_to_app((uint32_t)idx, &bev);
+                        fprintf(stderr,
+                                "launchpad: launched app %u (%s)\n",
+                                g_tiles[idx].id, g_tiles[idx].label);
+                    } else if (bev.type == BB_EV_TOUCH_DOWN) {
+                        /* Tap outside any tile = go home. */
+                        if (g_fg_app >= 0) {
+                            g_fg_app = -1;
+                            fprintf(stderr, "launchpad: home\n");
+                        }
+                    }
+                }
+            }
+        }
+
+        /* Vsync render cadence. */
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        uint64_t now = (uint64_t)ts.tv_sec * 1000000000ULL + ts.tv_nsec;
+        if (last_frame == 0 || now - last_frame >=
+            (uint64_t)LP_VSYNC_MS * 1000000ULL) {
+            last_frame = now;
+            compose(&r, frame_w, frame_h);
+            fb_flush(&r);
+            if (render_write_ppm(&r, out_ppm) != 0) {
+                fprintf(stderr, "launchpad: cannot write %s\n", out_ppm);
+            }
+        }
+    }
+
+    render_fini(&r);
+    fb_close();
+    close(bb_fd);
+    fprintf(stderr, "launchpad: exiting\n");
+    return 0;
+}

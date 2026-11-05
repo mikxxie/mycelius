@@ -1,0 +1,135 @@
+/* mycelius init — PID 1, BSD-style daemon supervisor for QEMU aarch64 virt
+ *
+ * Boots with a "Loading.." spinner, then starts daemons and supervises them,
+ * restarting any that crash — just like a phone OS.
+ */
+#define _GNU_SOURCE
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/mount.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <signal.h>
+#include <fcntl.h>
+#include <string.h>
+#include <errno.h>
+
+static volatile sig_atomic_t g_shutdown = 0;
+
+static void handle_signal(int sig) {
+    (void)sig;
+    g_shutdown = 1;
+}
+
+static void spinner_tick(int tick) {
+    const char *frames = "/-\\|";
+    fprintf(stderr, "\rLoading mycelius... %c", frames[tick % 4]);
+}
+
+static pid_t start_daemon(const char *name, char *const argv[]) {
+    pid_t pid = fork();
+    if (pid == 0) {
+        execv(argv[0], argv);
+        fprintf(stderr, "mycelius: failed to exec %s: %s\n", name, strerror(errno));
+        _exit(127);
+    }
+    if (pid < 0) {
+        fprintf(stderr, "mycelius: failed to fork %s: %s\n", name, strerror(errno));
+        return -1;
+    }
+    fprintf(stderr, "mycelius: started %s (pid %d)\n", name, pid);
+    return pid;
+}
+
+static void mount_filesystems(void) {
+    mount("proc", "/proc", "proc", 0, NULL);
+    mount("sysfs", "/sys", "sysfs", 0, NULL);
+    mount("devtmpfs", "/dev", "devtmpfs", 0, NULL);
+    mount("tmpfs", "/tmp", "tmpfs", 0, NULL);
+    mkdir("/var/run", 0755);
+    mkdir("/var/log", 0755);
+    chmod("/var/run", 0755);
+    chmod("/var/log", 0755);
+}
+
+static void show_spinner(int seconds) {
+    fprintf(stderr, "\r");
+    for (int i = 0; i < seconds * 4; i++) {
+        spinner_tick(i);
+        usleep(250000);
+    }
+    fprintf(stderr, "\rLoading mycelius... done.\n");
+}
+
+static int wait_for_socket(const char *path, int timeout_ms) {
+    for (int i = 0; i < timeout_ms / 100; i++) {
+        if (access(path, F_OK) == 0) return 0;
+        usleep(100000);
+    }
+    return -1;
+}
+
+int main(void) {
+    signal(SIGINT, handle_signal);
+    signal(SIGTERM, handle_signal);
+    signal(SIGCHLD, SIG_IGN); /* reap children automatically */
+
+    mount_filesystems();
+
+    /* Show loading spinner on console (like a phone bootloader) */
+    show_spinner(2);
+
+    /* Start backboardd first */
+    char *bb_argv[] = {"/sbin/backboardd", "-s", "/var/run/lp_bb.sock", NULL};
+    pid_t bb_pid = start_daemon("backboardd", bb_argv);
+    if (bb_pid > 0) {
+        /* Wait for backboardd socket before starting launchpad */
+        if (wait_for_socket("/var/run/lp_bb.sock", 5000) == 0) {
+            fprintf(stderr, "mycelius: backboardd socket ready\n");
+        } else {
+            fprintf(stderr, "mycelius: backboardd socket timeout\n");
+        }
+    }
+
+    /* Start launchpad after backboardd is ready */
+    char *lp_argv[] = {"/sbin/launchpad", "-b", "/var/run/lp_bb.sock",
+                       "-o", "/var/run/lp_frame.ppm", NULL};
+    pid_t lp_pid = start_daemon("launchpad", lp_argv);
+    if (lp_pid > 0) {
+        fprintf(stderr, "mycelius: UI stack running\n");
+    }
+
+    /* Supervision loop: restart crashed daemons */
+    while (!g_shutdown) {
+        sleep(1);
+        /* Check backboardd */
+        if (bb_pid > 0) {
+            int status;
+            pid_t r = waitpid(bb_pid, &status, WNOHANG);
+            if (r == bb_pid) {
+                fprintf(stderr, "mycelius: backboardd exited, restarting...\n");
+                bb_pid = start_daemon("backboardd", bb_argv);
+                if (bb_pid > 0) {
+                    wait_for_socket("/var/run/lp_bb.sock", 5000);
+                }
+            }
+        }
+        /* Check launchpad */
+        if (lp_pid > 0) {
+            int status;
+            pid_t r = waitpid(lp_pid, &status, WNOHANG);
+            if (r == lp_pid) {
+                fprintf(stderr, "mycelius: launchpad exited, restarting...\n");
+                lp_pid = start_daemon("launchpad", lp_argv);
+            }
+        }
+    }
+
+    /* Shutdown: kill all daemons */
+    if (bb_pid > 0) kill(bb_pid, SIGTERM);
+    if (lp_pid > 0) kill(lp_pid, SIGTERM);
+
+    fprintf(stderr, "mycelius: shutdown\n");
+    return 0;
+}
