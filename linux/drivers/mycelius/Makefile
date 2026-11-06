@@ -4,11 +4,9 @@
 CC ?= aarch64-linux-gnu-gcc
 CFLAGS ?= -O2 -Wall -Wextra -std=c11 -I.
 
-SRCS := backboardd.c launchpad.c render.c
-OBJS := $(SRCS:.c=.o)
-PROGS := backboardd launchpad
+PROGS := backboardd launchpad init mycc ignitectl discoveryd
 
-.PHONY: all clean
+.PHONY: all clean install
 
 all: $(PROGS)
 
@@ -18,8 +16,20 @@ backboardd: backboardd.c lp_proto.h
 launchpad: launchpad.c render.c lp_proto.h render.h
 	$(CC) $(CFLAGS) -static -o $@ launchpad.c render.c
 
+init: init.c
+	$(CC) $(CFLAGS) -static -o $@ init.c
+
+mycc: mycc.c
+	$(CC) $(CFLAGS) -static -o $@ mycc.c
+
+ignitectl: ignitectl.c
+	$(CC) $(CFLAGS) -static -o $@ ignitectl.c
+
+discoveryd: discoveryd.c
+	$(CC) $(CFLAGS) -static -o $@ discoveryd.c
+
 clean:
-	rm -f $(PROGS) $(OBJS)
+	rm -f $(PROGS)
 
 install: $(PROGS)
 	install -m 0755 $(PROGS) ../../../rootfs/sbin/

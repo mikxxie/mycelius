@@ -9,3 +9,16 @@ usr.sbin/launchpad/launchpad
 /tmp/mycelius-initramfs.gz
 /tmp/mycelius-kernel
 /tmp/linux-template/
+linux/drivers/mycelius/backboardd
+linux/drivers/mycelius/launchpad
+linux/drivers/mycelius/init
+linux/drivers/mycelius/mycc
+linux/drivers/mycelius/ignitectl
+linux/drivers/mycelius/discoveryd
+build/
+linux/drivers/mycelius/backboardd
+linux/drivers/mycelius/launchpad
+linux/drivers/mycelius/init
+linux/drivers/mycelius/mycc
+linux/drivers/mycelius/ignitectl
+linux/drivers/mycelius/discoveryd

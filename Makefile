@@ -1,6 +1,6 @@
 # mycelius - top-level build
 #
-#   make run      - Build initramfs and launch QEMU with GUI
+#   make run      - Build everything and launch QEMU with GUI
 #   make kernel   - Build Linux kernel (aarch64) from source
 #   make daemons  - Cross-compile backboardd + launchpad (static aarch64)
 #   make image    - Build initramfs with C init
@@ -15,7 +15,7 @@ INITRAMFS := build/mycelius-initramfs.gz
 
 all: kernel daemons image
 
-# ---------- Build Linux kernel from source (aarch64) ----------
+# ---------- Build Linux kernel from source (CI does this, local fallback) ----------
 kernel:
 	$(MAKE) -C linux ARCH=arm64 CROSS_COMPILE=$(CROSS_COMPILE) defconfig
 	$(MAKE) -C linux ARCH=arm64 CROSS_COMPILE=$(CROSS_COMPILE) -j$$(nproc) Image
@@ -31,13 +31,16 @@ image: daemons
 	         build/rootfs/etc build/rootfs/tmp build/rootfs/var/log build/rootfs/var/run
 	cp linux/drivers/mycelius/backboardd build/rootfs/sbin/backboardd
 	cp linux/drivers/mycelius/launchpad build/rootfs/sbin/launchpad
-	$(CROSS_COMPILE)gcc -O2 -static -o build/rootfs/init tools/init.c
-	chmod +x build/rootfs/init build/rootfs/sbin/backboardd build/rootfs/sbin/launchpad
+	cp linux/drivers/mycelius/init build/rootfs/sbin/init
+	cp linux/drivers/mycelius/mycc build/rootfs/sbin/mycc
+	cp linux/drivers/mycelius/ignitectl build/rootfs/sbin/ignitectl
+	cp linux/drivers/mycelius/discoveryd build/rootfs/sbin/discoveryd
+	chmod +x build/rootfs/init build/rootfs/sbin/backboardd build/rootfs/sbin/launchpad build/rootfs/sbin/mycc build/rootfs/sbin/ignitectl build/rootfs/sbin/discoveryd
 	printf '/dev/vda / ext2 defaults 0 1\nproc /proc proc defaults 0 0\nsysfs /sys sysfs defaults 0 0\ndevtmpfs /dev devtmpfs defaults 0 0\n' > build/rootfs/etc/fstab
-	cd build/rootfs && find . -mindepth 1 -printf '%P\0' | cpio --null -o -H newc | gzip > ../../$(INITRAMFS)
+	cd build/rootfs && find . -mindepth 1 -printf '%P\0' | cpio --null -o -H newc | gzip > ../$(INITRAMFS)
 
 # ---------- Run QEMU with GUI ----------
-run: image
+run: image kernel
 	@if [ ! -f $(KERNEL_IMG) ]; then \
 		echo "Error: kernel not found at $(KERNEL_IMG)"; \
 		echo "  Run 'make kernel' first (builds from source)"; \
