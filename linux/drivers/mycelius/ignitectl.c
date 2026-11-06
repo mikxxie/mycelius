@@ -11,6 +11,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <errno.h>
 
 static const char *DAEMON_DIR = "/sbin";
 static const char *PID_DIR = "/var/run";
