@@ -100,6 +100,13 @@ int main(void) {
         fprintf(stderr, "mycelius: UI stack running\n");
     }
 
+    /* Start mycc shell after launchpad */
+    char *cc_argv[] = {"/sbin/mycc", NULL};
+    pid_t cc_pid = start_daemon("mycc", cc_argv);
+    if (cc_pid > 0) {
+        fprintf(stderr, "mycelius: mycc shell started (pid %d)\n", cc_pid);
+    }
+
     /* Supervision loop: restart crashed daemons */
     while (!g_shutdown) {
         sleep(1);
