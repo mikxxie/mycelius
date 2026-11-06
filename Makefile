@@ -36,8 +36,13 @@ image: daemons
 	cp linux/drivers/mycelius/mycc build/rootfs/sbin/mycc
 	cp linux/drivers/mycelius/ignitectl build/rootfs/sbin/ignitectl
 	cp linux/drivers/mycelius/discoveryd build/rootfs/sbin/discoveryd
+	mknod -m 666 build/rootfs/dev/fb0 c 29 0 2>/dev/null || true
+	mknod -m 666 build/rootfs/dev/tty c 5 0 2>/dev/null || true
+	mknod -m 666 build/rootfs/dev/console c 5 1 2>/dev/null || true
+	mknod -m 666 build/rootfs/dev/null c 1 3 2>/dev/null || true
+	mknod -m 666 build/rootfs/dev/zero c 1 5 2>/dev/null || true
 	chmod +x build/rootfs/init build/rootfs/sbin/backboardd build/rootfs/sbin/launchpad build/rootfs/sbin/mycc build/rootfs/sbin/ignitectl build/rootfs/sbin/discoveryd
-	cd build/rootfs && find . -mindepth 1 -printf '%P\0' | cpio --null -o -H newc | gzip > ../$(INITRAMFS)
+	cd build/rootfs && find . -mindepth 1 -printf '%P\0' | cpio --null -o -H newc | gzip > ../mycelius-initramfs.gz
 
 # ---------- Run QEMU with GUI ----------
 qemu: image
