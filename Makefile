@@ -1,6 +1,6 @@
 # mycelius - top-level build
 #
-#   make run      - Build everything and launch QEMU with GUI
+#   make qemu      - Build initramfs and launch QEMU with GUI
 #   make kernel   - Build Linux kernel (aarch64) from source
 #   make daemons  - Cross-compile backboardd + launchpad (static aarch64)
 #   make image    - Build initramfs with C init
@@ -11,7 +11,7 @@ CROSS_COMPILE ?= aarch64-linux-gnu-
 KERNEL_IMG := linux/arch/arm64/boot/Image
 INITRAMFS := build/mycelius-initramfs.gz
 
-.PHONY: all run kernel daemons image update clean help
+.PHONY: all run qemu kernel daemons image update clean help
 
 all: kernel daemons image
 
@@ -28,22 +28,28 @@ daemons:
 image: daemons
 	rm -rf build/rootfs
 	mkdir -p build/rootfs/sbin build/rootfs/proc build/rootfs/sys build/rootfs/dev \
-	         build/rootfs/etc build/rootfs/tmp build/rootfs/var/log build/rootfs/var/run
+	         build/rootfs/etc build/rootfs/tmp build/rootfs/var/log build/rootfs/var/run \
+	         build/rootfs/dev/dri
+	$(CROSS_COMPILE)gcc -O2 -static -o build/rootfs/init linux/drivers/mycelius/init.c
 	cp linux/drivers/mycelius/backboardd build/rootfs/sbin/backboardd
 	cp linux/drivers/mycelius/launchpad build/rootfs/sbin/launchpad
-	cp linux/drivers/mycelius/init build/rootfs/sbin/init
 	cp linux/drivers/mycelius/mycc build/rootfs/sbin/mycc
 	cp linux/drivers/mycelius/ignitectl build/rootfs/sbin/ignitectl
 	cp linux/drivers/mycelius/discoveryd build/rootfs/sbin/discoveryd
+	mknod -m 666 build/rootfs/dev/fb0 c 29 0
+	mknod -m 666 build/rootfs/dev/tty c 5 0
+	mknod -m 666 build/rootfs/dev/console c 5 1
+	mknod -m 666 build/rootfs/dev/null c 1 3
+	mknod -m 666 build/rootfs/dev/zero c 1 5
 	chmod +x build/rootfs/init build/rootfs/sbin/backboardd build/rootfs/sbin/launchpad build/rootfs/sbin/mycc build/rootfs/sbin/ignitectl build/rootfs/sbin/discoveryd
-	printf '/dev/vda / ext2 defaults 0 1\nproc /proc proc defaults 0 0\nsysfs /sys sysfs defaults 0 0\ndevtmpfs /dev devtmpfs defaults 0 0\n' > build/rootfs/etc/fstab
-	cd build/rootfs && find . -mindepth 1 -printf '%P\0' | cpio --null -o -H newc | gzip > ../$(INITRAMFS)
+	cd build/rootfs && find . -mindepth 1 -printf '%P\0' | cpio --null -o -H newc | gzip > ../../$(INITRAMFS)
 
 # ---------- Run QEMU with GUI ----------
-run: image kernel
+qemu: image
 	@if [ ! -f $(KERNEL_IMG) ]; then \
 		echo "Error: kernel not found at $(KERNEL_IMG)"; \
 		echo "  Run 'make kernel' first (builds from source)"; \
+		echo "  Or CI builds it automatically on push"; \
 		exit 1; \
 	fi
 	qemu-system-aarch64 \
@@ -56,7 +62,6 @@ run: image kernel
 		-kernel $(KERNEL_IMG) \
 		-initrd $(INITRAMFS) \
 		-append "console=ttyAMA0 earlyprintk=ttyAMA0 init=/init" \
-		-serial stdio \
 		-no-reboot
 
 # ---------- Update system (.msu) ----------
@@ -79,7 +84,7 @@ clean:
 
 help:
 	@echo "mycelius build system"
-	@echo "  make run      - Build initramfs and launch QEMU with GUI"
+	@echo "  make qemu      - Build initramfs and launch QEMU with GUI"
 	@echo "  make kernel   - Build Linux kernel (aarch64) from source"
 	@echo "  make daemons  - Cross-compile backboardd + launchpad (static)"
 	@echo "  make image    - Build initramfs"
