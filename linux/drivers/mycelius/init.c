@@ -51,6 +51,14 @@ static void mount_filesystems(void) {
     mkdir("/var/log", 0755);
     chmod("/var/run", 0755);
     chmod("/var/log", 0755);
+
+    /* Create device nodes for framebuffer and console */
+    mknod("/dev/fb0", 0666 | S_IFCHR, makedev(29, 0));
+    mknod("/dev/tty", 0666 | S_IFCHR, makedev(5, 0));
+    mknod("/dev/console", 0666 | S_IFCHR, makedev(5, 1));
+    mknod("/dev/null", 0666 | S_IFCHR, makedev(1, 3));
+    mknod("/dev/zero", 0666 | S_IFCHR, makedev(1, 5));
+    mkdir("/dev/dri", 0755);
 }
 
 static void show_spinner(int seconds) {
