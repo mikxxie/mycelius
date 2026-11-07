@@ -53,13 +53,15 @@ static void mount_filesystems(void) {
     chmod("/var/run", 0755);
     chmod("/var/log", 0755);
 
-    /* Create device nodes for console, null, zero */
+    /* Create device nodes for console, null, zero, and framebuffer */
+    mknod("/dev/fb0", 0666 | S_IFCHR, makedev(29, 0));
     mknod("/dev/tty", 0666 | S_IFCHR, makedev(5, 0));
     mknod("/dev/console", 0666 | S_IFCHR, makedev(5, 1));
     mknod("/dev/null", 0666 | S_IFCHR, makedev(1, 3));
     mknod("/dev/zero", 0666 | S_IFCHR, makedev(1, 5));
     mkdir("/dev/dri", 0755);
-    /* /dev/fb0 is created by DRM + devtmpfs - we wait for it below */
+    /* /dev/fb0 is created by DRM + devtmpfs - mknod creates the node early,
+       DRM driver binds to it when ready */
 }
 
 static void show_spinner(int seconds) {
@@ -104,14 +106,16 @@ int main(void) {
     /* Start launchpad after backboardd AND framebuffer are ready */
     char *lp_argv[] = {"/sbin/launchpad", "-b", "/var/run/lp_bb.sock",
                        "-o", "/var/run/lp_frame.ppm", NULL};
-    /* Wait for /dev/fb0 to appear (created by DRM + devtmpfs) */
+    /* Wait for /dev/fb0 to become usable (DRM + fbdev emulation may take time) */
     if (access("/dev/fb0", F_OK) != 0) {
         fprintf(stderr, "mycelius: waiting for /dev/fb0...\n");
-        if (wait_for_socket("/dev/fb0", 10000) == 0) {
+        if (wait_for_socket("/dev/fb0", 30000) == 0) {
             fprintf(stderr, "mycelius: /dev/fb0 ready\n");
         } else {
-            fprintf(stderr, "mycelius: /dev/fb0 timeout\n");
+            fprintf(stderr, "mycelius: /dev/fb0 timeout, launchpad will use PPM fallback\n");
         }
+    } else {
+        fprintf(stderr, "mycelius: /dev/fb0 present\n");
     }
     pid_t lp_pid = start_daemon("launchpad", lp_argv);
     if (lp_pid > 0) {
