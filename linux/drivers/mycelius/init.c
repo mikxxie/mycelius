@@ -119,20 +119,35 @@ int main(void) {
     /* Start launchpad after backboardd AND framebuffer are ready */
     char *lp_argv[] = {"/sbin/launchpad", "-b", "/var/run/lp_bb.sock",
                        "-o", "/var/run/lp_frame.ppm", NULL};
-    /* Wait for /dev/fb0 to become usable (DRM + fbdev emulation may take time) */
+    /* Start launchpad after backboardd is ready */
+    char *lp_argv[] = {"/sbin/launchpad", "-b", "/var/run/lp_bb.sock",
+                       "-o", "/var/run/lp_frame.ppm", NULL};
+    pid_t lp_pid = start_daemon("launchpad", lp_argv);
+    if (lp_pid > 0) {
+        fprintf(stderr, "mycelius: UI stack running\n");
+    }
+
+    /* Wait for /dev/fb0 to become usable (DRM + fbdev emulation may take time).
+     * If it appears, restart launchpad so it uses the real framebuffer. */
     if (access("/dev/fb0", F_OK) != 0) {
         fprintf(stderr, "mycelius: waiting for /dev/fb0...\n");
-        if (wait_for_device("/dev/fb0", 30000) == 0) {
-            fprintf(stderr, "mycelius: /dev/fb0 ready\n");
+        if (wait_for_device("/dev/fb0", 15000) == 0) {
+            fprintf(stderr, "mycelius: /dev/fb0 ready, restarting launchpad with framebuffer\n");
+            kill(lp_pid, SIGTERM);
+            usleep(500000);
+            lp_pid = start_daemon("launchpad", lp_argv);
         } else {
-            fprintf(stderr, "mycelius: /dev/fb0 timeout, launchpad will use PPM fallback\n");
+            fprintf(stderr, "mycelius: /dev/fb0 timeout, launchpad using PPM fallback\n");
         }
     } else {
         fprintf(stderr, "mycelius: /dev/fb0 present, waiting for DRM...\n");
-        if (wait_for_device("/dev/fb0", 30000) == 0) {
-            fprintf(stderr, "mycelius: /dev/fb0 ready\n");
+        if (wait_for_device("/dev/fb0", 15000) == 0) {
+            fprintf(stderr, "mycelius: /dev/fb0 ready, restarting launchpad with framebuffer\n");
+            kill(lp_pid, SIGTERM);
+            usleep(500000);
+            lp_pid = start_daemon("launchpad", lp_argv);
         } else {
-            fprintf(stderr, "mycelius: /dev/fb0 timeout, launchpad will use PPM fallback\n");
+            fprintf(stderr, "mycelius: /dev/fb0 timeout, launchpad using PPM fallback\n");
         }
     }
     pid_t lp_pid = start_daemon("launchpad", lp_argv);
