@@ -62,7 +62,7 @@ qemu: image
 		-display gtk \
 		-kernel $(KERNEL_IMG) \
 		-initrd $(INITRAMFS) \
-		-append "console=ttyAMA0 earlyprintk=ttyAMA0 init=/init" \
+		-append "console=ttyAMA0 earlyprintk=ttyAMA0 init=/init root=/dev/ram0" \
 		-no-reboot
 
 # ---------- Update system (.msu) ----------
