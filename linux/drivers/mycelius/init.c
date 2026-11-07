@@ -53,8 +53,7 @@ static void mount_filesystems(void) {
     chmod("/var/run", 0755);
     chmod("/var/log", 0755);
 
-    /* Create device nodes for framebuffer and console */
-    mknod("/dev/fb0", 0666 | S_IFCHR, makedev(29, 0));
+    /* Create device nodes for console and null */
     mknod("/dev/tty", 0666 | S_IFCHR, makedev(5, 0));
     mknod("/dev/console", 0666 | S_IFCHR, makedev(5, 1));
     mknod("/dev/null", 0666 | S_IFCHR, makedev(1, 3));
