@@ -22,6 +22,7 @@ kernel:
 
 # ---------- Cross-compile daemons (static aarch64) ----------
 daemons:
+	$(MAKE) -C linux/drivers/mycelius clean
 	$(MAKE) -C linux/drivers/mycelius CC=$(CROSS_COMPILE)gcc CFLAGS="-O2 -Wall -std=c11 -I. -static"
 
 # ---------- Build initramfs ----------
