@@ -81,6 +81,19 @@ static int wait_for_socket(const char *path, int timeout_ms) {
     return -1;
 }
 
+static int wait_for_device(const char *path, int timeout_ms) {
+    int fd;
+    for (int i = 0; i < timeout_ms / 100; i++) {
+        fd = open(path, O_RDWR);
+        if (fd >= 0) {
+            close(fd);
+            return 0;
+        }
+        usleep(100000);
+    }
+    return -1;
+}
+
 int main(void) {
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
@@ -109,13 +122,18 @@ int main(void) {
     /* Wait for /dev/fb0 to become usable (DRM + fbdev emulation may take time) */
     if (access("/dev/fb0", F_OK) != 0) {
         fprintf(stderr, "mycelius: waiting for /dev/fb0...\n");
-        if (wait_for_socket("/dev/fb0", 30000) == 0) {
+        if (wait_for_device("/dev/fb0", 30000) == 0) {
             fprintf(stderr, "mycelius: /dev/fb0 ready\n");
         } else {
             fprintf(stderr, "mycelius: /dev/fb0 timeout, launchpad will use PPM fallback\n");
         }
     } else {
-        fprintf(stderr, "mycelius: /dev/fb0 present\n");
+        fprintf(stderr, "mycelius: /dev/fb0 present, waiting for DRM...\n");
+        if (wait_for_device("/dev/fb0", 30000) == 0) {
+            fprintf(stderr, "mycelius: /dev/fb0 ready\n");
+        } else {
+            fprintf(stderr, "mycelius: /dev/fb0 timeout, launchpad will use PPM fallback\n");
+        }
     }
     pid_t lp_pid = start_daemon("launchpad", lp_argv);
     if (lp_pid > 0) {
