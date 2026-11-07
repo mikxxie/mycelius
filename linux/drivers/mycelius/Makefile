@@ -4,7 +4,7 @@
 CC ?= aarch64-linux-gnu-gcc
 CFLAGS ?= -O2 -Wall -Wextra -std=c11 -I.
 
-PROGS := backboardd launchpad init mycc ignitectl discoveryd updatesd
+PROGS := backboardd launchpad init mycc ignitectl discoveryd updatesd moad
 
 .PHONY: all clean install
 
@@ -30,6 +30,9 @@ discoveryd: discoveryd.c
 
 updatesd: updatesd.c
 	$(CC) $(CFLAGS) -static -o $@ updatesd.c
+
+moad: moad.c
+	$(CC) $(CFLAGS) -static -o $@ moad.c
 
 clean:
 	rm -f $(PROGS)

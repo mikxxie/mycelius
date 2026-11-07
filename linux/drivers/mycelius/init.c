@@ -53,13 +53,13 @@ static void mount_filesystems(void) {
     chmod("/var/run", 0755);
     chmod("/var/log", 0755);
 
-    /* Create device nodes for console, null, zero, and framebuffer */
-    mknod("/dev/fb0", 0666 | S_IFCHR, makedev(29, 0));
+    /* Create device nodes for console, null, zero */
     mknod("/dev/tty", 0666 | S_IFCHR, makedev(5, 0));
     mknod("/dev/console", 0666 | S_IFCHR, makedev(5, 1));
     mknod("/dev/null", 0666 | S_IFCHR, makedev(1, 3));
     mknod("/dev/zero", 0666 | S_IFCHR, makedev(1, 5));
     mkdir("/dev/dri", 0755);
+    /* /dev/fb0 is created by DRM + devtmpfs - we wait for it below */
 }
 
 static void show_spinner(int seconds) {
@@ -101,9 +101,18 @@ int main(void) {
         }
     }
 
-    /* Start launchpad after backboardd is ready */
+    /* Start launchpad after backboardd AND framebuffer are ready */
     char *lp_argv[] = {"/sbin/launchpad", "-b", "/var/run/lp_bb.sock",
                        "-o", "/var/run/lp_frame.ppm", NULL};
+    /* Wait for /dev/fb0 to appear (created by DRM + devtmpfs) */
+    if (access("/dev/fb0", F_OK) != 0) {
+        fprintf(stderr, "mycelius: waiting for /dev/fb0...\n");
+        if (wait_for_socket("/dev/fb0", 10000) == 0) {
+            fprintf(stderr, "mycelius: /dev/fb0 ready\n");
+        } else {
+            fprintf(stderr, "mycelius: /dev/fb0 timeout\n");
+        }
+    }
     pid_t lp_pid = start_daemon("launchpad", lp_argv);
     if (lp_pid > 0) {
         fprintf(stderr, "mycelius: UI stack running\n");
@@ -116,11 +125,11 @@ int main(void) {
         fprintf(stderr, "mycelius: mycc shell started (pid %d)\n", cc_pid);
     }
 
-    /* Start updatesd last - checks for online updates */
-    char *ud_argv[] = {"/sbin/updatesd", NULL};
-    pid_t ud_pid = start_daemon("updatesd", ud_argv);
-    if (ud_pid > 0) {
-        fprintf(stderr, "mycelius: updatesd started (pid %d)\n", ud_pid);
+    /* Start moad (Mycelius Over Air Daemon) - checks for updates */
+    char *moad_argv[] = {"/sbin/moad", "auto", NULL};
+    pid_t moad_pid = start_daemon("moad", moad_argv);
+    if (moad_pid > 0) {
+        fprintf(stderr, "mycelius: moad started (pid %d)\n", moad_pid);
     }
 
     /* Supervision loop: restart crashed daemons */
@@ -147,13 +156,13 @@ int main(void) {
                 lp_pid = start_daemon("launchpad", lp_argv);
             }
         }
-        /* Check updatesd */
-        if (ud_pid > 0) {
+        /* Check moad */
+        if (moad_pid > 0) {
             int status;
-            pid_t r = waitpid(ud_pid, &status, WNOHANG);
-            if (r == ud_pid) {
-                fprintf(stderr, "mycelius: updatesd exited, restarting...\n");
-                ud_pid = start_daemon("updatesd", ud_argv);
+            pid_t r = waitpid(moad_pid, &status, WNOHANG);
+            if (r == moad_pid) {
+                fprintf(stderr, "mycelius: moad exited, restarting...\n");
+                moad_pid = start_daemon("moad", moad_argv);
             }
         }
     }
@@ -161,5 +170,5 @@ int main(void) {
     /* Shutdown: kill all daemons */
     if (bb_pid > 0) kill(bb_pid, SIGTERM);
     if (lp_pid > 0) kill(lp_pid, SIGTERM);
-    if (ud_pid > 0) kill(ud_pid, SIGTERM);
+    if (moad_pid > 0) kill(moad_pid, SIGTERM);
 }

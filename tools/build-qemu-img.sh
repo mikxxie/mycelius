@@ -37,26 +37,18 @@ cp "$XNU_ROOT/linux/drivers/mycelius/mycc" "$BUILD_ROOT/rootfs/sbin/mycc"
 cp "$XNU_ROOT/linux/drivers/mycelius/ignitectl" "$BUILD_ROOT/rootfs/sbin/ignitectl"
 cp "$XNU_ROOT/linux/drivers/mycelius/discoveryd" "$BUILD_ROOT/rootfs/sbin/discoveryd"
 cp "$XNU_ROOT/linux/drivers/mycelius/updatesd" "$BUILD_ROOT/rootfs/sbin/updatesd"
+cp "$XNU_ROOT/linux/drivers/mycelius/moad" "$BUILD_ROOT/rootfs/sbin/moad"
 chmod 0755 "$BUILD_ROOT/rootfs/sbin/"*
 
 echo "==> Creating initramfs"
 cd "$BUILD_ROOT/rootfs"
 find . -mindepth 1 -printf '%P\0' | cpio --null -o -H newc | gzip > "$INITRAMFS_OUT"
 
-echo "==> Ensuring kernel at $KERNEL_OUT"
-if [ ! -f "$KERNEL_OUT" ]; then
-    echo "   Downloading/building aarch64 Linux kernel for QEMU virt..."
-    KERNEL_DIR="/tmp/linux"
-    if [ ! -d "$KERNEL_DIR/.git" ]; then
-        rm -rf "$KERNEL_DIR"
-        git clone --depth 1 https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git "$KERNEL_DIR"
-    fi
-    cd "$KERNEL_DIR"
-    git pull --depth 1 || true
-    make ARCH=arm64 defconfig >/dev/null 2>&1
-    make ARCH=arm64 -j$(nproc) Image >/dev/null 2>&1
-    cp arch/arm64/boot/Image "$KERNEL_OUT"
-fi
+echo "==> Building Linux kernel (aarch64) from our tree"
+KERNEL_DIR="$XNU_ROOT/linux"
+make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig >/dev/null 2>&1
+make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) Image >/dev/null 2>&1
+cp arch/arm64/boot/Image "$KERNEL_OUT"
 
 if [ ! -f "$KERNEL_OUT" ]; then
     echo "   ERROR: Could not build kernel. Place an aarch64 kernel at:"

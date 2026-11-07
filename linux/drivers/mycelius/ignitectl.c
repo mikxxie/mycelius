@@ -111,7 +111,7 @@ static void status_daemon(const char *name) {
 }
 
 static void list_daemons(void) {
-    const char *daemons[] = { "backboardd", "launchpad", NULL };
+    const char *daemons[] = { "backboardd", "launchpad", "moad", NULL };
     for (int i = 0; daemons[i]; i++) {
         status_daemon(daemons[i]);
     }
