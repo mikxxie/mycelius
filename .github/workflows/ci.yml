@@ -75,6 +75,17 @@ jobs:
           cd /tmp/linux
           git pull --depth 1 || true
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
+          # Apply mycelius kernel config
+          cat >> .config << 'EOF'
+          CONFIG_DRM_VIRTIO_GPU=y
+          CONFIG_DRM_VIRTIO_GPU_KMS=y
+          CONFIG_DRM_FBDEV_EMULATION=y
+          CONFIG_DRM=y
+          CONFIG_FB=y
+          CONFIG_VT=y
+          CONFIG_VT_CONSOLE=y
+          CONFIG_FRAMEBUFFER_CONSOLE=y
+          EOF
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) Image
           cp arch/arm64/boot/Image /tmp/mycelius-kernel
           ls -lh /tmp/mycelius-kernel

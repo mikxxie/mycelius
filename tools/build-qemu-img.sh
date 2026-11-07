@@ -44,15 +44,10 @@ echo "==> Creating initramfs"
 cd "$BUILD_ROOT/rootfs"
 find . -mindepth 1 -printf '%P\0' | cpio --null -o -H newc | gzip > "$INITRAMFS_OUT"
 
-echo "==> Building Linux kernel (aarch64) from our tree"
-KERNEL_DIR="$XNU_ROOT/linux"
-make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig >/dev/null 2>&1
-make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) Image >/dev/null 2>&1
-cp arch/arm64/boot/Image "$KERNEL_OUT"
-
+echo "==> Using kernel (CI builds it in step 9; locally run 'make kernel')"
 if [ ! -f "$KERNEL_OUT" ]; then
-    echo "   ERROR: Could not build kernel. Place an aarch64 kernel at:"
-    echo "     $KERNEL_OUT"
+    echo "   WARNING: No kernel found at $KERNEL_OUT"
+    echo "   Run 'make kernel' first to build from source"
     touch "$OUTDIR/NO_KERNEL"
 fi
 
