@@ -7,7 +7,6 @@ OUTDIR="${1:-/tmp}"
 mkdir -p "$OUTDIR"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 XNU_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-ROOTFS_DIR="$XNU_ROOT/rootfs"
 BUILD_ROOT="$(mktemp -d)"
 
 cleanup() { rm -rf "$BUILD_ROOT"; }
@@ -15,12 +14,13 @@ trap cleanup EXIT
 
 INITRAMFS_OUT="/tmp/mycelius-initramfs.gz"
 KERNEL_OUT="/tmp/mycelius-kernel"
+CC="aarch64-linux-gnu-gcc"
 
 echo "==> Building mycelius daemons (aarch64-linux-gnu, static)"
-make -C "$XNU_ROOT/usr.sbin/backboardd" CC=aarch64-linux-gnu-gcc \
-    CFLAGS="-O2 -Wall -std=c11 -I../include -static" >/dev/null 2>&1
-make -C "$XNU_ROOT/usr.sbin/launchpad" CC=aarch64-linux-gnu-gcc \
-    CFLAGS="-O2 -Wall -std=c11 -I../include -static" >/dev/null 2>&1
+make -C "$XNU_ROOT/linux/drivers/mycelius" clean >/dev/null 2>&1 || true
+make -C "$XNU_ROOT/linux/drivers/mycelius" \
+    CC="$CC" \
+    CFLAGS="-O2 -Wall -Wextra -std=c11 -I. -static"
 
 echo "==> Compiling static init (aarch64-linux-gnu)"
 mkdir -p "$XNU_ROOT/rootfs"
@@ -30,12 +30,14 @@ aarch64-linux-gnu-gcc -O2 -Wall -std=c11 -static \
 echo "==> Staging rootfs for initramfs"
 rm -rf "$BUILD_ROOT/rootfs"
 mkdir -p "$BUILD_ROOT/rootfs/sbin" "$BUILD_ROOT/rootfs/proc" "$BUILD_ROOT/rootfs/sys" "$BUILD_ROOT/rootfs/dev" "$BUILD_ROOT/rootfs/etc" "$BUILD_ROOT/rootfs/tmp" "$BUILD_ROOT/rootfs/var/log" "$BUILD_ROOT/rootfs/var/run"
-cp -a "$ROOTFS_DIR/." "$BUILD_ROOT/rootfs/"
-cp "$XNU_ROOT/usr.sbin/backboardd/backboardd" "$BUILD_ROOT/rootfs/sbin/backboardd"
-cp "$XNU_ROOT/usr.sbin/launchpad/launchpad" "$BUILD_ROOT/rootfs/sbin/launchpad"
-chmod 0755 "$BUILD_ROOT/rootfs/sbin/backboardd" \
-           "$BUILD_ROOT/rootfs/sbin/launchpad" \
-           "$BUILD_ROOT/rootfs/init"
+cp "$XNU_ROOT/linux/drivers/mycelius/backboardd" "$BUILD_ROOT/rootfs/sbin/backboardd"
+cp "$XNU_ROOT/linux/drivers/mycelius/launchpad" "$BUILD_ROOT/rootfs/sbin/launchpad"
+cp "$XNU_ROOT/linux/drivers/mycelius/init" "$BUILD_ROOT/rootfs/sbin/init"
+cp "$XNU_ROOT/linux/drivers/mycelius/mycc" "$BUILD_ROOT/rootfs/sbin/mycc"
+cp "$XNU_ROOT/linux/drivers/mycelius/ignitectl" "$BUILD_ROOT/rootfs/sbin/ignitectl"
+cp "$XNU_ROOT/linux/drivers/mycelius/discoveryd" "$BUILD_ROOT/rootfs/sbin/discoveryd"
+cp "$XNU_ROOT/linux/drivers/mycelius/updatesd" "$BUILD_ROOT/rootfs/sbin/updatesd"
+chmod 0755 "$BUILD_ROOT/rootfs/sbin/"*
 
 echo "==> Creating initramfs"
 cd "$BUILD_ROOT/rootfs"

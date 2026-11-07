@@ -115,6 +115,13 @@ int main(void) {
         fprintf(stderr, "mycelius: mycc shell started (pid %d)\n", cc_pid);
     }
 
+    /* Start updatesd last - checks for online updates */
+    char *ud_argv[] = {"/sbin/updatesd", NULL};
+    pid_t ud_pid = start_daemon("updatesd", ud_argv);
+    if (ud_pid > 0) {
+        fprintf(stderr, "mycelius: updatesd started (pid %d)\n", ud_pid);
+    }
+
     /* Supervision loop: restart crashed daemons */
     while (!g_shutdown) {
         sleep(1);
@@ -139,12 +146,19 @@ int main(void) {
                 lp_pid = start_daemon("launchpad", lp_argv);
             }
         }
+        /* Check updatesd */
+        if (ud_pid > 0) {
+            int status;
+            pid_t r = waitpid(ud_pid, &status, WNOHANG);
+            if (r == ud_pid) {
+                fprintf(stderr, "mycelius: updatesd exited, restarting...\n");
+                ud_pid = start_daemon("updatesd", ud_argv);
+            }
+        }
     }
 
     /* Shutdown: kill all daemons */
     if (bb_pid > 0) kill(bb_pid, SIGTERM);
     if (lp_pid > 0) kill(lp_pid, SIGTERM);
-
-    fprintf(stderr, "mycelius: shutdown\n");
-    return 0;
+    if (ud_pid > 0) kill(ud_pid, SIGTERM);
 }
