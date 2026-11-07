@@ -116,9 +116,6 @@ int main(void) {
         }
     }
 
-    /* Start launchpad after backboardd AND framebuffer are ready */
-    char *lp_argv[] = {"/sbin/launchpad", "-b", "/var/run/lp_bb.sock",
-                       "-o", "/var/run/lp_frame.ppm", NULL};
     /* Start launchpad after backboardd is ready */
     char *lp_argv[] = {"/sbin/launchpad", "-b", "/var/run/lp_bb.sock",
                        "-o", "/var/run/lp_frame.ppm", NULL};
@@ -149,10 +146,6 @@ int main(void) {
         } else {
             fprintf(stderr, "mycelius: /dev/fb0 timeout, launchpad using PPM fallback\n");
         }
-    }
-    pid_t lp_pid = start_daemon("launchpad", lp_argv);
-    if (lp_pid > 0) {
-        fprintf(stderr, "mycelius: UI stack running\n");
     }
 
     /* Start mycc shell after launchpad */
