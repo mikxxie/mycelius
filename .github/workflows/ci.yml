@@ -86,6 +86,7 @@ jobs:
           CONFIG_VT_CONSOLE=y
           CONFIG_FRAMEBUFFER_CONSOLE=y
           CONFIG_BLK_DEV_INITRD=y
+          CONFIG_BLK_DEV_RAM=y
           EOF
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) Image
           cp arch/arm64/boot/Image /tmp/mycelius-kernel
