@@ -159,6 +159,7 @@ void ext4_pwd(void);
 void net_status(void);
 void net_set_up(int up);
 void net_init(void);
+int net_is_up(void);
 void net_poll(void);
 int net_ping(const char *ip);
 int virtio_net_mac(u8 *mac);

@@ -81,9 +81,11 @@ void kernel_main(void) {
     mmu_init();
     virtio_probe();
 
-    /* Initialize GUI framebuffer */
+    /* Initialize GUI framebuffer and display */
     gui_init();
     gui_demo();
+    virtio_gpu_display();
+    uart_puts("mycelius: GUI framebuffer active\r\n");
 
     (void)task_create(1, 0x0a000000UL, 0x200);
     (void)task_create(2, 0x0a000200UL, 0x200);

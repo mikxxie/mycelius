@@ -4,12 +4,6 @@
 static char line[48];
 static u32 used;
 static int same(const char *a, const char *b) { while (*a && *a == *b) { ++a; ++b; } return *a == *b; }
-static void put_u32(u32 n) {
-    char digits[11]; u32 i = 0;
-    if (!n) { uart_puts("0"); return; }
-    while (n) { digits[i++] = (char)('0' + n % 10); n /= 10; }
-    while (i) { char out[2] = { digits[--i], 0 }; uart_puts(out); }
-}
 static void prompt(void) { uart_puts("mycelius> "); }
 static const char *arg(const char *command, u32 skip) { while (skip--) ++command; return *command == ' ' ? command + 1 : 0; }
 static void execute(void) {

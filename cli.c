@@ -13,13 +13,6 @@ static char mnu_buf[1024]; /* MNU editor buffer */
 static u32 mnu_len; /* bytes in MNU editor buffer */
 
 /* Utility functions */
-static void put_u32(u32 n) {
-    char digits[11]; u32 i = 0;
-    if (!n) { uart_puts("0"); return; }
-    while (n) { digits[i++] = (char)('0' + n % 10); n /= 10; }
-    while (i) { char out[2] = { digits[--i], 0 }; uart_puts(out); }
-}
-
 static const char *arg(const char *command, u32 skip) { while (skip--) ++command; return *command == ' ' ? command + 1 : 0; }
 
 static void prompt(void); /* forward declaration */
