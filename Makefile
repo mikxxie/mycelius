@@ -1,6 +1,4 @@
 CROSS ?= aarch64-none-elf-
-# Use the selected cross prefix even when the host exports CC=cc.  Command-line
-# overrides remain supported (for example CC='clang --target=aarch64-none-elf').
 CC    := $(CROSS)gcc
 OBJCOPY := $(CROSS)objcopy
 
@@ -8,7 +6,7 @@ OBJCOPY := $(CROSS)objcopy
 CFLAGS := -Wall -Wextra -Werror -O2 -ffreestanding -fno-builtin -fno-stack-protector \
           -nostdlib -nostartfiles -mgeneral-regs-only -march=armv8-a -I. -Wno-pointer-to-int-cast
 LDFLAGS := -T linker.ld -nostdlib -Wl,--build-id=none
-OBJS := boot.o vectors.o el0.o kernel.o ipc.o drivers.o cli.o mmu.o vfs.o net.o virtio.o ext4.o gui.o drivers/net/e1000.o drivers/disk/ide.o
+OBJS := boot.o vectors.o el0.o kernel.o ipc.o cli.o mmu.o vfs.o net.o kernel/drivers/virtio.o ext4.o gui.o drivers/gpu/fb.o drivers/net/e1000.o drivers/disk/ide.o userspace/sbin/mycc.o userspace/sbin/discoveryd.o userspace/sbin/moad.o
 
 all: mycelius.bin
 
@@ -29,7 +27,7 @@ mycelius.bin: mycelius.elf
 
 QEMU ?= qemu-system-aarch64
 QEMU_DISPLAY ?= gtk
-QEMU_COMMON := -M virt -cpu cortex-a72 -m 16M -kernel mycelius.bin -netdev user,id=net0 -device virtio-net-device,netdev=net0
+QEMU_COMMON := -M virt -cpu cortex-a72 -m 64M -kernel mycelius.bin -netdev user,id=net0 -device virtio-net-device,netdev=net0
 
 run: mycelius.bin disk
 	$(QEMU) $(QEMU_COMMON) -nographic -drive if=none,file=mycelius.img,format=raw,id=blk0 -device virtio-blk-device,drive=blk0

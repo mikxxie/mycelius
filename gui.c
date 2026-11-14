@@ -12,7 +12,7 @@
 /* Flat framebuffer at a fixed physical address that QEMU's virtio-gpu
  * can scan out.  Placed at 0x400c9000 — within the kernel's identity-mapped
  * RAM region so VA == PA for DMA. */
-static u32 fb_buf[FB_WIDTH * FB_HEIGHT] __attribute__((aligned(4096)));
+u32 fb_buf[FB_WIDTH * FB_HEIGHT] __attribute__((aligned(4096)));
 static u32 *fb = fb_buf;
 static u32  fb_pa = 0;
 

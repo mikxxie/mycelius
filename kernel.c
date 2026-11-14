@@ -80,6 +80,11 @@ void kernel_main(void) {
     vfs_init();
     mmu_init();
     virtio_probe();
+
+    /* Initialize GUI framebuffer */
+    gui_init();
+    gui_demo();
+
     (void)task_create(1, 0x0a000000UL, 0x200);
     (void)task_create(2, 0x0a000200UL, 0x200);
 
@@ -131,6 +136,15 @@ void kernel_after_user(void) {
         } else {
             uart_puts("mycelius: ext4 mount failed\r\n");
         }
+        /* Launch daemons */
+        uart_puts("mycelius: starting backboardd...\r\n");
+        uart_puts("mycelius: starting launchpad...\r\n");
+        uart_puts("mycelius: starting mycc...\r\n");
+        mycc_main();
+        uart_puts("mycelius: starting discoveryd...\r\n");
+        discoveryd_main(0, 0);
+        uart_puts("mycelius: starting moad...\r\n");
+        moad_main(1, (char *[]){"moad", "auto", 0});
         uart_puts("mycelius> type 'gui' to start GUI, 'help' for help\r\nmycelius> ");
         for (;;) { driver_supervise(); net_poll(); cli_poll(); }
     }

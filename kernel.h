@@ -4,6 +4,12 @@ typedef unsigned short u16;
 typedef unsigned int u32;
 typedef unsigned long u64;
 
+#ifndef NULL
+#define NULL ((void*)0)
+#endif
+
+void put_u32(u32 n);
+
 #define RAM_BASE 0x40000000UL
 #define RAM_BYTES (16UL * 1024 * 1024)
 #define PAGE_SIZE 4096UL
@@ -167,3 +173,6 @@ u32 gui_fb_addr(void);
 u32 gui_fb_width(void);
 u32 gui_fb_height(void);
 int virtio_gpu_display(void);
+int mycc_main(void);
+int discoveryd_main(int argc, char **argv);
+int moad_main(int argc, char **argv);
