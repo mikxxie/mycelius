@@ -7,3 +7,4 @@ void net_status(void) {
     uart_puts(interface_up ? "UP" : "DOWN");
     uart_puts(" (virtio-net transport not attached)\r\n");
 }
+int net_is_up(void) { return interface_up; }

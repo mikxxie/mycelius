@@ -32,14 +32,10 @@ static int read_line(char *buf, int size) {
     while (i < size - 1) {
         int c = uart_getc_nonblock();
         if (c < 0) {
-            if (i == 0) {
-                /* Wait for first character */
-                for (volatile int j = 0; j < 50000; ++j) __asm__ volatile("nop");
-                c = uart_getc_nonblock();
-                if (c < 0) continue;
-            } else {
-                return i;
-            }
+            /* Wait for a character */
+            for (volatile int j = 0; j < 50000; ++j) __asm__ volatile("nop");
+            c = uart_getc_nonblock();
+            if (c < 0) continue;  /* Keep waiting */
         }
         if (c == '\r' || c == '\n') {
             buf[i] = 0;

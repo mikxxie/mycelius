@@ -30,6 +30,8 @@ static void execute(void) {
     else if (same(line, "ext4 ls")) { if (ext4_ls_root()) uart_puts("ext4: unsupported or unreadable root\r\n"); }
     else if (same(line, "restart net")) task_restart(1);
     else if (same(line, "restart blk")) task_restart(2);
+    else if (same(line, "ignite")) uart_puts("ignite: usage: ignite <start|stop|restart|status|list> <daemon>\r\n");
+    else if (same(line, "mnu")) uart_puts("mnu: not yet implemented - use ignite <cmd> <daemon>\r\n");
     else if (line[0]) uart_puts("unknown command\r\n");
 }
 void cli_poll(void) {

@@ -37,6 +37,7 @@ int vfs_mkdir(const char *name);
 
 void net_status(void);
 void net_set_up(int up);
+int net_is_up(void);
 
 void virtio_probe(void);
 void virtio_status(void);
