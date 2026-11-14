@@ -29,6 +29,11 @@ QEMU ?= qemu-system-aarch64
 QEMU_DISPLAY ?= gtk
 QEMU_COMMON := -M virt -cpu cortex-a72 -m 64M -kernel mycelius.bin -netdev user,id=net0 -device virtio-net-device,netdev=net0
 
+all: mycelius.bin
+
+qemu: mycelius.bin disk
+	$(QEMU) $(QEMU_COMMON) -m 64M -display $(QEMU_DISPLAY) -serial mon:stdio -serial vc -drive if=none,file=mycelius.img,format=raw,id=blk0 -device virtio-blk-device,drive=blk0 -device virtio-gpu-device
+
 run: mycelius.bin disk
 	$(QEMU) $(QEMU_COMMON) -nographic -drive if=none,file=mycelius.img,format=raw,id=blk0 -device virtio-blk-device,drive=blk0
 
@@ -60,4 +65,4 @@ clean:
 	rm -f $(OBJS) mycelius.elf mycelius.bin
 	$(MAKE) -C userspace clean
 
-.PHONY: all run run-gui run-gui-1 run-gui-2 run-gui-3 run-disk disk format-disk size clean userspace
+.PHONY: all run run-gui run-gui-1 run-gui-2 run-gui-3 run-disk disk format-disk size clean userspace qemu
