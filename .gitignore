@@ -22,3 +22,5 @@ linux/drivers/mycelius/init
 linux/drivers/mycelius/mycc
 linux/drivers/mycelius/ignitectl
 linux/drivers/mycelius/discoveryd
+linux/drivers/mycelius/moad
+linux/drivers/mycelius/updatesd
