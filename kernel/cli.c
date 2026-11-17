@@ -16,10 +16,24 @@ static void execute(void) {
     else if (same(line, "ls")) vfs_ls();
     else if (line[0] == 'l' && line[1] == 's' && line[2] == ' ') { if (vfs_ls_path(arg(line, 2))) uart_puts("ls: no such directory\r\n"); }
     else if (line[0] == 'c' && line[1] == 'd' && line[2] == ' ') { if (vfs_cd(arg(line, 2))) uart_puts("cd: no such directory\r\n"); }
-    else if (line[0] == 'm' && line[1] == 'k' && line[2] == 'd' && line[3] == 'i' && line[4] == 'r' && line[5] == ' ') {
+    else if (line[0] == 'm' && line[1] == 'k' && line[2] == 'i' && line[3] == 'd' && line[4] == 'r' && line[5] == ' ') {
         int r = vfs_mkdir(arg(line, 5));
         if (r == -2) uart_puts("mkdir: filesystem is read-only; run make format-disk\r\n");
         else if (r) uart_puts("mkdir: cannot create directory\r\n");
+    }
+    else if (line[0] == 'r' && line[1] == 'm' && line[2] == ' ') {
+        int r = vfs_rm(arg(line, 3));
+        if (r == -2) uart_puts("rm: filesystem is read-only\r\n");
+        else if (r) uart_puts("rm: cannot remove\r\n");
+    }
+    else if (line[0] == 't' && line[1] == 'o' && line[2] == 'u' && line[3] == 'c' && line[4] == 'h' && line[5] == ' ') {
+        int r = vfs_write_file(arg(line, 6), NULL, 0);
+        if (r == -2) uart_puts("touch: filesystem is read-only\r\n");
+        else if (r) uart_puts("touch: cannot create file\r\n");
+        else uart_puts("touch: created\r\n");
+    }
+    else if (line[0] == 'c' && line[1] == 'a' && line[2] == 't' && line[3] == ' ') {
+        vfs_cat(arg(line, 4));
     }
     else if (same(line, "net status")) net_status();
     else if (same(line, "net up")) net_set_up(1);
