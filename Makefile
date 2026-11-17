@@ -10,6 +10,8 @@ OBJS := boot.o vectors.o el0.o kernel.o ipc.o cli.o mmu.o vfs.o net.o kernel/dri
 
 all: mycelius.bin
 
+build: mycelius.bin
+
 userspace:
 	$(MAKE) -C userspace CROSS=$(CROSS)
 
