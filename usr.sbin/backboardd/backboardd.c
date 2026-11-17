@@ -6,6 +6,8 @@
 #include <sys/rprio.h>
 
 int backboardd_main(int argc, char **argv) {
+    (void)argc;
+    (void)argv;
     /* Placeholder backboard daemon */
     while (1) {
         /* Placeholder - actual implementation TBD */

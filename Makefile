@@ -4,9 +4,9 @@ OBJCOPY := $(CROSS)objcopy
 
 # No libc, allocation, or exception unwinding: this keeps the image predictable.
 CFLAGS := -Wall -Wextra -Werror -O2 -ffreestanding -fno-builtin -fno-stack-protector \
-          -nostdlib -nostartfiles -mgeneral-regs-only -march=armv8-a -I. -Wno-pointer-to-int-cast
+          -nostdlib -nostartfiles -mgeneral-regs-only -march=armv8-a -I. -Iusr.sbin/include -Wno-pointer-to-int-cast
 LDFLAGS := -T linker.ld -nostdlib -Wl,--build-id=none
-OBJS := boot.o vectors.o el0.o kernel.o ipc.o cli.o mmu.o vfs.o net.o kernel/drivers/virtio.o ext4.o gui.o drivers/gpu/fb.o drivers/net/e1000.o drivers/disk/ide.o userspace/sbin/mycc.o userspace/sbin/discoveryd.o userspace/sbin/moad.o
+OBJS := boot.o vectors.o el0.o kernel.o ipc.o cli.o mmu.o vfs.o net.o kernel/drivers/virtio.o ext4.o gui.o drivers/gpu/fb.o drivers/net/e1000.o drivers/disk/ide.o usr.sbin/backboardd/backboardd.o usr.sbin/launchpad/launchpad.o userspace/sbin/mycc.o userspace/sbin/discoveryd.o userspace/sbin/moad.o
 
 all: mycelius.bin
 
